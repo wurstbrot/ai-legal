@@ -37,7 +37,8 @@ def neue_lauf_id(jetzt: datetime.datetime | None = None) -> str:
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="legal.bash", description="KI-Rechtsanwalt-Beratung (Entwurf für Timo).")
     p.add_argument("fallordner", nargs="?", default=None,
-                   help="Ordner mit anweisung.md und fall/ (nur .txt/.md, vorab pseudonymisiert); "
+                   help="Fallordner mit anweisung.md und der Akte (.txt/.md, auch in Unterordnern, vorab "
+                        "pseudonymisiert); "
                         "optional, Default: das aktuelle Verzeichnis")
     p.add_argument("--keep", action="store_true", help="Arbeitsverzeichnisse nach dem Lauf behalten (E-9)")
     return p
@@ -110,7 +111,7 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None,
                  + hinweis(exc.reason, getattr(exc, "file_index", None)) + zusatz)
         return EXIT_EINGABE
     except OSError as exc:
-        # z. B. fehlende Leserechte auf fall/ oder ergebnis/ nicht anlegbar; keine Pfade ins Log.
+        # z. B. fehlende Leserechte im Fallordner oder ergebnis/ nicht anlegbar; keine Pfade ins Log.
         sec_event("legal.input.rejected", "rejected", komponente="eingabe", reason="os_error",
                   error=type(exc).__name__)
         progress("Fallordner nicht lesbar oder Ergebnisordner nicht anlegbar – Abbruch vor jedem Modellaufruf"

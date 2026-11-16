@@ -2,7 +2,11 @@
 
 Alle Prüfungen laufen vor jedem Modellaufruf. Verstöße führen zu `EingabeFehler`
 bzw. `MountUnsicher` (Exit 2). Logs nennen nur Kategorie und Datei-Index, nie
-Dateinamen oder Inhalte aus `fall/`.
+Dateinamen oder Inhalte der Akte.
+
+Die Akte sind alle Dateien im Fall-Ordner und seinen Unterordnern (rekursiv,
+sortiert nach relativem Pfad), ausgenommen auf oberster Ebene `anweisung.md`,
+das Ausgabeverzeichnis `ergebnis/` und die Hold-Datei `HOLD` (SPEC 2026-11-16).
 """
 from __future__ import annotations
 
@@ -18,6 +22,11 @@ from .logging_setup import sec_event
 MAX_DATEI = 2 * 1024 * 1024
 MAX_DATEIEN = 200
 MAX_GESAMT = 20 * 1024 * 1024
+# Obergrenze besuchter Einträge (Dateien und Ordner) beim rekursiven Einlesen; schützt vor
+# versehentlichem Start in einem großen Verzeichnisbaum (z. B. ~).
+MAX_EINTRAEGE = 2000
+# Auf oberster Ebene des Fall-Ordners keine Akte: Auftrag, eigene Ausgaben, Hold-Datei.
+AUSGENOMMEN_OBEN = ("anweisung.md", "ergebnis", "HOLD")
 MAX_ANWEISUNG = 64 * 1024
 ENDUNGEN = (".txt", ".md")
 
@@ -44,11 +53,13 @@ class MountUnsicher(RuntimeError):
 
 @dataclass(frozen=True)
 class Fallordner:
-    """Geprüfter Fallordner mit sortierter Dateiliste aus `fall/`."""
+    """Geprüfter Fallordner mit nach relativem Pfad sortierter Akten-Dateiliste."""
 
     root: Path
     anweisung: Path
     dateien: tuple[Path, ...]
+    # Inhalte, wie sie das Gate gelesen und geprüft hat; nur diese gehen weiter (kein zweites Lesen).
+    texte: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -68,21 +79,20 @@ class Anweisung:
 HINWEISE = {
     "path": "Fallordner existiert nicht oder ist kein Verzeichnis.",
     "missing_anweisung": "Im Fallordner fehlt die Datei 'anweisung.md' (genau so: klein, Endung .md).",
-    "missing_fall": "Im Fallordner fehlt das Unterverzeichnis 'fall/' mit den Akten-Dateien (.txt/.md).",
-    "symlink": "Symbolische Links sind nicht erlaubt (anweisung.md, fall/ oder eine Datei darin).",
-    "type": "anweisung.md muss eine normale Datei und fall/ ein Verzeichnis sein; in fall/ nur normale Dateien.",
+    "symlink": "Symbolische Links sind nicht erlaubt (anweisung.md oder ein Eintrag im Fallordner/Unterordner).",
+    "type": "anweisung.md und alle Akten-Einträge müssen normale Dateien oder Ordner sein.",
     "hardlink": "Hardlinks sind nicht erlaubt.",
-    "hidden": "Versteckte Dateien (Name beginnt mit '.') in fall/ sind nicht erlaubt.",
-    "directory": "Unterverzeichnisse in fall/ sind nicht erlaubt; alle Dateien direkt in fall/ ablegen.",
-    "extension": "In fall/ sind nur .txt- und .md-Dateien erlaubt.",
-    "size": "Zu groß: max. 2 MiB je Datei, 200 Dateien, 20 MiB gesamt, anweisung.md max. 64 KiB.",
+    "hidden": "Versteckte Dateien/Ordner (Name beginnt mit '.') sind nicht erlaubt, auch in Unterordnern.",
+    "extension": "Nur .txt- und .md-Dateien erlaubt, auch in Unterordnern (außer anweisung.md, ergebnis/, HOLD).",
+    "size": "Zu groß: max. 2 MiB je Datei, 200 Dateien, 20 MiB, 2000 Einträge, anweisung.md 64 KiB.",
     "encoding": "Datei ist kein gültiges UTF-8 oder enthält NUL-Zeichen.",
-    "empty": "fall/ enthält keine Dateien.",
+    "name": "Datei- oder Ordnername ist kein gültiges UTF-8.",
+    "empty": "Im Fallordner liegen außer anweisung.md keine Akten-Dateien (.txt/.md).",
     "unreadable": "Datei nicht lesbar (Rechte prüfen).",
     "instruction_duplicate": "Eine Schlüsselzeile (Ergebnis/Seite/Wortlimit/Personas/Vergleich) steht mehrfach in anweisung.md.",
     "instruction_value": "Ungültiger Wert in anweisung.md: Ergebnis: <Text ≤ 80 Zeichen>, Seite: Kläger|Beklagter, "
                          "Wortlimit: 50–20000, Personas: an|aus, Vergleich: ja|nein.",
-    "mapping": "In fall/ liegt eine Mapping-Datei (z. B. mapping.md); sie darf nie mit an die Modelle.",
+    "mapping": "Mapping-Datei (z. B. mapping.md) im Fallordner oder Unterordner; darf nie an die Modelle.",
     "cli_config": "Im Mount liegt eine CLI-Konfiguration (z. B. CLAUDE.md, .claude, AGENTS.md).",
 }
 
@@ -91,7 +101,7 @@ def hinweis(reason: str, file_index: int | None = None) -> str:
     """Verständlicher Hinweis zum Ablehnungsgrund (ohne Pfade/Inhalte)."""
     text = HINWEISE.get(reason, f"Grund: {reason}")
     if file_index is not None:
-        text += f" (betrifft die {file_index}. Datei in fall/, alphabetisch sortiert)"
+        text += f" (Eintrag Nr. {file_index}, nach relativem Pfad sortiert)"
     return text
 
 
@@ -104,8 +114,12 @@ def _abweisen(reason: str, index: int | None = None) -> EingabeFehler:
 
 
 def _lies_text(pfad: Path, max_bytes: int, index: int | None) -> str:
-    """Reguläre Datei ohne Symlink-Folgen lesen und als UTF-8 ohne NUL prüfen."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    """Reguläre Datei ohne Symlink-Folgen lesen und als UTF-8 ohne NUL prüfen.
+
+    `O_NONBLOCK`, damit eine nachträglich untergeschobene FIFO nicht blockiert; Typ und
+    Hardlink-Zahl werden am geöffneten Deskriptor geprüft (kein Wechsel nach `lstat`).
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         fd = os.open(pfad, flags)
     except OSError as exc:
@@ -114,6 +128,8 @@ def _lies_text(pfad: Path, max_bytes: int, index: int | None) -> str:
         st = os.fstat(fh.fileno())
         if not stat.S_ISREG(st.st_mode):
             raise _abweisen("type", index)
+        if st.st_nlink > 1:
+            raise _abweisen("hardlink", index)
         if st.st_size > max_bytes:
             raise _abweisen("size", index)
         daten = fh.read(max_bytes + 1)
@@ -127,15 +143,15 @@ def _lies_text(pfad: Path, max_bytes: int, index: int | None) -> str:
         raise _abweisen("encoding", index) from exc
 
 
-def pruefe_mapping(verzeichnis: Path, mapping_namen: tuple[str, ...], *, nur_mapping: bool = False) -> None:
-    """Mount-Gate (TM-AC-4): keine Mapping-Datei, kein verbotener Name, kein Symlink.
+def pruefe_mapping(verzeichnis: Path, mapping_namen: tuple[str, ...]) -> None:
+    """Mount-Gate (TM-AC-4) für Container-Eingaben: keine Mapping-Datei, kein verbotener Name, kein Symlink.
 
-    Prüft rekursiv per `lstat`, ohne Symlinks zu folgen. `nur_mapping=True` für
-    `fall/` selbst: Dort zählt nur der Mapping-Name; `CLAUDE.md` wird akzeptiert und
-    unter neutralem Namen kopiert (TM-AC-2), Symlinks weist TM-AC-1 ab.
+    Prüft rekursiv per `lstat`, ohne Symlinks zu folgen. Für den Fallordner selbst übernimmt
+    `pruefe_fallordner` das Mapping-Gate (dort wird `CLAUDE.md` als Akte akzeptiert und unter
+    neutralem Namen kopiert, TM-AC-2).
     """
     verboten_map = {n.casefold() for n in mapping_namen}
-    verboten_cli = set() if nur_mapping else {n.casefold() for n in VERBOTENE_MOUNT_NAMEN}
+    verboten_cli = {n.casefold() for n in VERBOTENE_MOUNT_NAMEN}
     stapel = [verzeichnis]
     while stapel:
         aktuell = stapel.pop()
@@ -148,8 +164,6 @@ def pruefe_mapping(verzeichnis: Path, mapping_namen: tuple[str, ...], *, nur_map
                 if name in verboten_cli:
                     sec_event("legal.mount.unsafe", "aborted", komponente="eingabe", reason="cli_config")
                     raise MountUnsicher("cli_config")
-                if nur_mapping:
-                    continue
                 if eintrag.is_symlink():
                     sec_event("legal.mount.unsafe", "aborted", komponente="eingabe", reason="symlink")
                     raise MountUnsicher("symlink")
@@ -157,8 +171,39 @@ def pruefe_mapping(verzeichnis: Path, mapping_namen: tuple[str, ...], *, nur_map
                     stapel.append(Path(eintrag.path))
 
 
+def _sammle_eintraege(root: Path) -> list[tuple[str, str]]:
+    """Alle Einträge unter `root` rekursiv als (relativer Pfad, absoluter Pfad), sortiert.
+
+    Folgt keinen Symlinks und steigt nicht in versteckte Ordner ab (sie werden als Eintrag
+    gemeldet und von der Prüfung abgewiesen). Auf oberster Ebene bleiben `anweisung.md`,
+    `ergebnis/` (nur als echtes Verzeichnis) und `HOLD` außen vor.
+    """
+    eintraege: list[tuple[str, str]] = []
+    stapel: list[tuple[str, str]] = [(str(root), "")]
+    besucht = 0
+    while stapel:
+        verzeichnis, praefix = stapel.pop()
+        with os.scandir(verzeichnis) as it:
+            for e in it:
+                besucht += 1
+                if besucht > MAX_EINTRAEGE:
+                    raise _abweisen("size")
+                if not praefix and e.name in AUSGENOMMEN_OBEN:
+                    if e.name != "ergebnis" or e.is_dir(follow_symlinks=False):
+                        continue
+                rel = praefix + e.name
+                eintraege.append((rel, e.path))
+                if e.is_dir(follow_symlinks=False) and not e.name.startswith("."):
+                    stapel.append((e.path, rel + "/"))
+    eintraege.sort(key=lambda t: t[0])
+    return eintraege
+
+
 def pruefe_fallordner(pfad: Path, mapping_namen: tuple[str, ...]) -> Fallordner:
-    """Fallordner gemäß TM-AC-1 prüfen; Abbruch vor jedem Modellaufruf bei Verstoß."""
+    """Fallordner gemäß TM-AC-1 prüfen; Abbruch vor jedem Modellaufruf bei Verstoß.
+
+    Die Akte wird rekursiv aus dem Fallordner gelesen (siehe Moduldocstring).
+    """
     try:
         root = Path(pfad).resolve(strict=True)
     except (OSError, RuntimeError) as exc:
@@ -166,55 +211,61 @@ def pruefe_fallordner(pfad: Path, mapping_namen: tuple[str, ...]) -> Fallordner:
     if not root.is_dir():
         raise _abweisen("path")
     anweisung = root / "anweisung.md"
-    fall = root / "fall"
     try:
         st_a = os.lstat(anweisung)
     except OSError as exc:
         raise _abweisen("missing_anweisung") from exc
-    try:
-        st_f = os.lstat(fall)
-    except OSError as exc:
-        raise _abweisen("missing_fall") from exc
-    if stat.S_ISLNK(st_a.st_mode) or stat.S_ISLNK(st_f.st_mode):
+    if stat.S_ISLNK(st_a.st_mode):
         raise _abweisen("symlink")
-    if not stat.S_ISREG(st_a.st_mode) or not stat.S_ISDIR(st_f.st_mode):
+    if not stat.S_ISREG(st_a.st_mode):
         raise _abweisen("type")
     if st_a.st_nlink > 1:
         raise _abweisen("hardlink")
     _lies_text(anweisung, MAX_ANWEISUNG, None)
 
-    # Mapping-Gate zuerst: eine Fehlablage wird als solche gemeldet (E-12).
-    pruefe_mapping(fall, mapping_namen, nur_mapping=True)
+    eintraege = _sammle_eintraege(root)
 
-    eintraege = sorted(os.scandir(fall), key=lambda e: e.name)
-    if len(eintraege) > MAX_DATEIEN:
-        raise _abweisen("size")
+    # Mapping-Gate zuerst und im ganzen Baum: eine Fehlablage wird als solche gemeldet (E-12).
+    verboten_map = {n.casefold() for n in mapping_namen}
+    if any(Path(rel).name.casefold() in verboten_map for rel, _ in eintraege):
+        sec_event("legal.mount.unsafe", "aborted", komponente="eingabe", reason="mapping")
+        raise MountUnsicher("mapping")
+
     dateien: list[Path] = []
+    texte: list[str] = []
     gesamt = 0
-    for index, eintrag in enumerate(eintraege, start=1):
-        st = os.lstat(eintrag.path)
-        if eintrag.name.startswith("."):
+    for index, (rel, pfad_abs) in enumerate(eintraege, start=1):
+        name = Path(rel).name
+        try:
+            rel.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise _abweisen("name", index) from exc
+        st = os.lstat(pfad_abs)
+        if name.startswith("."):
             raise _abweisen("hidden", index)
         if stat.S_ISLNK(st.st_mode):
             raise _abweisen("symlink", index)
         if stat.S_ISDIR(st.st_mode):
-            raise _abweisen("directory", index)
+            continue
         if not stat.S_ISREG(st.st_mode):
             raise _abweisen("type", index)
-        if Path(eintrag.name).suffix.lower() not in ENDUNGEN:
+        if Path(name).suffix.lower() not in ENDUNGEN:
             raise _abweisen("extension", index)
         if st.st_nlink > 1:
             raise _abweisen("hardlink", index)
         if st.st_size > MAX_DATEI:
             raise _abweisen("size", index)
-        gesamt += st.st_size
+        text = _lies_text(Path(pfad_abs), MAX_DATEI, index)
+        gesamt += len(text.encode("utf-8"))   # tatsächlich gelesene Bytes, nicht lstat-Größe
         if gesamt > MAX_GESAMT:
             raise _abweisen("size", index)
-        _lies_text(Path(eintrag.path), MAX_DATEI, index)
-        dateien.append(Path(eintrag.path))
+        dateien.append(Path(pfad_abs))
+        texte.append(text)
+        if len(dateien) > MAX_DATEIEN:
+            raise _abweisen("size", index)
     if not dateien:
         raise _abweisen("empty")
-    return Fallordner(root=root, anweisung=anweisung, dateien=tuple(dateien))
+    return Fallordner(root=root, anweisung=anweisung, dateien=tuple(dateien), texte=tuple(texte))
 
 
 # Schlüsselzeile, auch als Markdown: optionales Listenzeichen (`-`, `*`, `+`) und Fettdruck
@@ -273,16 +324,17 @@ def lies_anweisung(pfad: Path) -> Anweisung:
                      personas=personas, vergleich=vergleich, gesetzte_schluessel=tuple(sorted(werte)))
 
 
-def kopiere_neutral(dateien: tuple[Path, ...], ziel: Path) -> dict[str, int]:
-    """Akte unter neutralen Namen `dok_001.md` … nach `ziel` kopieren (TM-AC-2).
+def kopiere_neutral(texte: tuple[str, ...], ziel: Path) -> dict[str, int]:
+    """Akte unter neutralen Namen `dok_001.md` … nach `ziel` schreiben (TM-AC-2).
 
+    Schreibt die vom Gate gelesenen und geprüften Inhalte (`Fallordner.texte`); die Akte wird
+    nicht erneut gelesen, sodass ein Austausch nach der Prüfung nichts mehr einschleust.
     Rückgabe: `dok_nnn` → Index in der sortierten Dateiliste. Die Zuordnung zum
     Dateinamen steht nur im Host-Protokoll, nie im Log oder Mount.
     """
     zuordnung: dict[str, int] = {}
-    for index, quelle in enumerate(dateien, start=1):
+    for index, inhalt in enumerate(texte, start=1):
         dok = f"dok_{index:03d}"
-        inhalt = _lies_text(quelle, MAX_DATEI, index)
         fd = os.open(ziel / f"{dok}.md", os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
                      0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:

@@ -328,10 +328,11 @@ class Conductor:
         # Akte unter neutralen Namen (TM-AC-2); Zuordnung nur im Host-Protokoll.
         akte = self.arbeit / "akte"
         akte.mkdir(mode=0o700)
-        zuordnung = kopiere_neutral(self.fall.dateien, akte)
+        zuordnung = kopiere_neutral(self.fall.texte, akte)
         self.doks = {dok: (akte / f"{dok}.md").read_text(encoding="utf-8") for dok in zuordnung}
         self._md("## Zuordnung dok ↔ Datei (nur Host)\n\n" + "\n".join(
-            f"- {dok} ← {einzeilig(self.fall.dateien[i - 1].name, 200)}" for dok, i in zuordnung.items()))
+            f"- {dok} ← {einzeilig(str(self.fall.dateien[i - 1].relative_to(self.fall.root)), 200)}"
+            for dok, i in zuordnung.items()))
         for dok, kategorie in injektions_heuristik(self.doks):
             self.e.injektions_hinweise.append(f"{dok}: Anweisungsmuster „{kategorie}“ (wird als Daten behandelt)")
         akte_eingaben = {f"{dok}.md": text for dok, text in self.doks.items()}

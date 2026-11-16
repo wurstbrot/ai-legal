@@ -59,18 +59,17 @@ class FallordnerTest(Basis):
         geheim = self.tmp / "geheim.txt"
         geheim.write_text("HOST-GEHEIMNIS", encoding="utf-8")
         root = erstelle_fall(self.tmp / "s", dateien={"b.md": "ok"})
-        os.symlink(geheim, root / "fall" / "a.md")
+        os.symlink(geheim, root / "a.md")
         self.lauf_abgewiesen(root, "symlink")
 
     def test_hardlink_versteckt_unterordner(self) -> None:
         root = erstelle_fall(self.tmp / "h", dateien={"a.md": "ok"})
-        os.link(root / "fall" / "a.md", self.tmp / "zweiter_link.md")
+        os.link(root / "a.md", self.tmp / "zweiter_link.md")
         self.lauf_abgewiesen(root, "hardlink")
         root = erstelle_fall(self.tmp / "v", dateien={".versteckt.md": "x"})
         self.lauf_abgewiesen(root, "hidden")
-        root = erstelle_fall(self.tmp / "u", dateien={"a.md": "ok"})
-        (root / "fall" / "unter").mkdir()
-        self.lauf_abgewiesen(root, "directory")
+        root = erstelle_fall(self.tmp / "u", dateien={"a.md": "ok", ".git/config.md": "x"})
+        self.lauf_abgewiesen(root, "hidden")   # versteckter Ordner im Fallordner
 
     def test_uebergroesse(self) -> None:
         root = erstelle_fall(self.tmp / "g1", dateien={"gross.txt": "a" * (2 * 1024 * 1024 + 1)})
@@ -92,14 +91,14 @@ class FallordnerTest(Basis):
         root = erstelle_fall(self.tmp / "f")
         (root / "anweisung.md").unlink()
         self.lauf_abgewiesen(root, "missing_anweisung")
-        root = erstelle_fall(self.tmp / "f1")
-        shutil.rmtree(root / "fall")
-        self.lauf_abgewiesen(root, "missing_fall")
+        root = erstelle_fall(self.tmp / "f1", dateien={})
+        self.lauf_abgewiesen(root, "empty")   # nur anweisung.md, keine Akte
         root = erstelle_fall(self.tmp / "f2")
         ziel = self.tmp / "anderer_fall"
-        shutil.move(str(root / "fall"), ziel)
-        os.symlink(ziel, root / "fall")
-        self.lauf_abgewiesen(root, "symlink")
+        ziel.mkdir()
+        (ziel / "fremd.md").write_text("fremde Akte", encoding="utf-8")
+        os.symlink(ziel, root / "unterordner")
+        self.lauf_abgewiesen(root, "symlink")   # Symlink auf einen Ordner wird nicht verfolgt
         self.lauf_abgewiesen(self.tmp / "gibt_es_nicht", "path")
 
     def test_modell_id_ungueltig_vor_jedem_aufruf(self) -> None:
@@ -111,10 +110,10 @@ class FallordnerTest(Basis):
         self.assertEqual(runner.aufrufe, [])
 
     def test_os_fehler_ohne_traceback_exit_2(self) -> None:
-        root = erstelle_fall(self.tmp / "p")
-        os.chmod(root / "fall", 0)
-        self.addCleanup(os.chmod, root / "fall", 0o700)
-        if os.access(root / "fall", os.R_OK):
+        root = erstelle_fall(self.tmp / "p", dateien={"a.md": "ok", "gesperrt/b.md": "x"})
+        os.chmod(root / "gesperrt", 0)
+        self.addCleanup(os.chmod, root / "gesperrt", 0o700)
+        if os.access(root / "gesperrt", os.R_OK):
             self.skipTest("läuft mit Root-Rechten")
         self.lauf_abgewiesen(root, "os_error")
 
@@ -133,9 +132,110 @@ class FallordnerTest(Basis):
         self.assertEqual([p.name for p in fall.dateien], ["CLAUDE.md", "b.TXT"])
         ziel = self.tmp / "mount"
         ziel.mkdir()
-        zuordnung = kopiere_neutral(fall.dateien, ziel)
+        zuordnung = kopiere_neutral(fall.texte, ziel)
         self.assertEqual(sorted(os.listdir(ziel)), ["dok_001.md", "dok_002.md"])
         self.assertEqual(zuordnung, {"dok_001": 1, "dok_002": 2})
+
+
+class RekursiveAkteTest(Basis):
+    """Akte = alle .txt/.md im Fallordner inkl. Unterordnern (SPEC 2026-11-16)."""
+
+    def pruefe(self, root: Path) -> list[str]:
+        fall = pruefe_fallordner(root, ("mapping.md",))
+        return [str(d.relative_to(fall.root)) for d in fall.dateien]
+
+    def test_unterordner_werden_sortiert_gelesen(self) -> None:
+        root = erstelle_fall(self.tmp / "r", dateien={"b.md": "b", "a/z.txt": "z", "a/tief/x.md": "x",
+                                                      "a/anweisung.md": "Akte, kein Auftrag"})
+        self.assertEqual(self.pruefe(root), ["a/anweisung.md", "a/tief/x.md", "a/z.txt", "b.md"])
+
+    def test_ausnahmen_nur_auf_oberster_ebene(self) -> None:
+        root = erstelle_fall(self.tmp / "ausn", dateien={"a.md": "a", "ergebnis/alt/beratung.md": "alt",
+                                                         "unter/ergebnis/notiz.md": "n"})
+        (root / "HOLD").write_text("", encoding="utf-8")
+        self.assertEqual(self.pruefe(root), ["a.md", "unter/ergebnis/notiz.md"])
+
+    def test_ergebnis_als_datei_ist_keine_ausnahme(self) -> None:
+        root = erstelle_fall(self.tmp / "ed", dateien={"a.md": "a", "ergebnis": "x"})
+        with self.assertLogs("legal", level="INFO"), self.assertRaises(EingabeFehler) as cm:
+            self.pruefe(root)
+        self.assertEqual(cm.exception.reason, "extension")
+
+    def test_gates_in_unterordnern(self) -> None:
+        faelle = {
+            "mapping": ({"a.md": "a", "tief/unten/Mapping.MD": "NAME_1 = Max"}, "legal.mount.unsafe"),
+            "extension": ({"a.md": "a", "scans/brief.pdf": "%PDF"}, "legal.input.rejected"),
+            "hidden": ({"a.md": "a", "unter/.directory": "x"}, "legal.input.rejected"),
+            "encoding": ({"a.md": "a", "unter/b.txt": b"\xff\xfe"}, "legal.input.rejected"),
+        }
+        for reason, (dateien, event) in faelle.items():
+            with self.subTest(reason=reason):
+                root = erstelle_fall(self.tmp / reason, dateien=dateien)
+                self.lauf_abgewiesen(root, reason, event=event)
+
+    def test_symlink_datei_in_unterordner(self) -> None:
+        geheim = self.tmp / "geheim.txt"
+        geheim.write_text("HOST-GEHEIMNIS", encoding="utf-8")
+        root = erstelle_fall(self.tmp / "sl", dateien={"a.md": "a", "unter/b.md": "b"})
+        os.symlink(geheim, root / "unter" / "c.md")
+        self.lauf_abgewiesen(root, "symlink")
+
+    def test_zu_viele_eintraege_im_baum(self) -> None:
+        root = erstelle_fall(self.tmp / "baum", dateien={"a.md": "a"})
+        for i in range(2001):
+            (root / f"leer{i:04d}").mkdir()
+        self.lauf_abgewiesen(root, "size")
+
+    def test_protokoll_zeigt_relativen_pfad(self) -> None:
+        root = erstelle_fall(self.tmp / "prot", dateien={"mails/2026/01_mail.txt": "<NAME_1> schreibt."})
+        runner = FakeRunner()
+        with self.assertLogs("legal", level="INFO") as cm, contextlib.redirect_stdout(io.StringIO()):
+            code = main([str(root)], runner=runner, env={}, heute=HEUTE)
+        self.assertEqual(code, 0, cm.output)
+        lauf = next((root / "ergebnis").iterdir())
+        self.assertIn("dok_001 ← mails/2026/01_mail.txt", (lauf / "protokoll.md").read_text(encoding="utf-8"))
+        self.assertFalse(any("01_mail" in z for z in cm.output))
+
+    def test_nicht_utf8_name_exit_2(self) -> None:
+        root = erstelle_fall(self.tmp / "nm", dateien={"a.md": "a"})
+        os.makedirs(os.path.join(os.fsencode(root), b"unter"))
+        with open(os.path.join(os.fsencode(root), b"unter", b"\xff.md"), "wb") as fh:
+            fh.write(b"x")
+        self.lauf_abgewiesen(root, "name")
+
+    def test_fifo_versteckter_ordner_und_hardlink_in_unterordnern(self) -> None:
+        root = erstelle_fall(self.tmp / "fifo", dateien={"a.md": "a", "unter/b.md": "b"})
+        os.mkfifo(root / "unter" / "c.md")
+        self.lauf_abgewiesen(root, "type")
+        root = erstelle_fall(self.tmp / "hid", dateien={"a.md": "a", "unter/.cache/x.md": "x"})
+        self.lauf_abgewiesen(root, "hidden")
+        root = erstelle_fall(self.tmp / "hl", dateien={"a.md": "a", "unter/b.md": "b"})
+        os.link(root / "unter" / "b.md", self.tmp / "zweiter.md")
+        self.lauf_abgewiesen(root, "hardlink")
+
+    def test_zweiter_lauf_liest_eigenes_ergebnis_nicht(self) -> None:
+        root = erstelle_fall(self.tmp / "zwei", dateien={"a.md": "<NAME_1> schreibt."})
+        for _ in range(2):
+            with self.assertLogs("legal", level="INFO") as cm, contextlib.redirect_stdout(io.StringIO()):
+                code = main([str(root)], runner=FakeRunner(), env={}, heute=HEUTE)
+            self.assertEqual(code, 0, cm.output)
+        self.assertEqual(len(list((root / "ergebnis").iterdir())), 2)
+        self.assertEqual(self.pruefe(root), ["a.md"])
+
+    def test_aenderung_nach_gate_erreicht_die_akte_nicht(self) -> None:
+        root = erstelle_fall(self.tmp / "toctou", dateien={"a.md": "geprüft", "unter/b.md": "b"})
+        fall = pruefe_fallordner(root, ("mapping.md",))
+        (root / "a.md").write_text("NACHTRÄGLICH", encoding="utf-8")
+        shutil.rmtree(root / "unter")
+        fremd = self.tmp / "fremd"
+        fremd.mkdir()
+        (fremd / "b.md").write_text("FREMD", encoding="utf-8")
+        os.symlink(fremd, root / "unter")
+        ziel = self.tmp / "mount_toctou"
+        ziel.mkdir()
+        kopiere_neutral(fall.texte, ziel)
+        self.assertEqual((ziel / "dok_001.md").read_text(encoding="utf-8"), "geprüft")
+        self.assertEqual((ziel / "dok_002.md").read_text(encoding="utf-8"), "b")
 
 
 class AktuellesVerzeichnisTest(Basis):
@@ -182,7 +282,8 @@ class AktuellesVerzeichnisTest(Basis):
 
     def test_cwd_falsch_ohne_anweisung(self) -> None:
         leer = self.tmp / "kein_fall"
-        (leer / "fall").mkdir(parents=True)
+        (leer / "akte").mkdir(parents=True)
+        (leer / "akte" / "a.md").write_text("ok", encoding="utf-8")
         logs = self.lauf_abgewiesen(leer, "missing_anweisung", argv=[], env={"LEGAL_AUFRUF_CWD": str(leer)})
         self.assertTrue(any(self.ZUSATZ in z for z in logs), logs)
         self.keine_pfade(logs)
@@ -196,9 +297,9 @@ class AktuellesVerzeichnisTest(Basis):
         self.keine_pfade(logs)
 
     def test_kein_hochsuchen_in_elternordnern(self) -> None:
-        root = erstelle_fall(self.tmp / "eltern")
-        os.chdir(root / "fall")
-        self.lauf_abgewiesen(root / "fall", "missing_anweisung", argv=[])
+        root = erstelle_fall(self.tmp / "eltern", dateien={"unter/a.md": "ok"})
+        os.chdir(root / "unter")
+        self.lauf_abgewiesen(root / "unter", "missing_anweisung", argv=[])
         self.assertFalse((root / "ergebnis").exists())
 
     def test_gates_gelten_auch_fuer_cwd(self) -> None:
@@ -210,8 +311,8 @@ class AktuellesVerzeichnisTest(Basis):
         self.lauf_abgewiesen(root, "mapping", event="legal.mount.unsafe", argv=[])
         root = erstelle_fall(self.tmp / "sym")
         ziel = self.tmp / "fremd"
-        shutil.move(str(root / "fall"), ziel)
-        os.symlink(ziel, root / "fall")
+        ziel.mkdir()
+        os.symlink(ziel, root / "unterordner")
         self.lauf_abgewiesen(root, "symlink", argv=[], env={"LEGAL_AUFRUF_CWD": str(root)})
 
     def test_arg_relativ_unveraendert_und_ohne_zusatz(self) -> None:

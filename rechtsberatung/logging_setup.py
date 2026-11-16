@@ -2,7 +2,7 @@
 
 Security-relevante Ereignisse werden mit `[SEC]` getaggt und tragen Zeitstempel,
 Subjekt (OS-Nutzer und Lauf-ID), Komponente und Ergebnis. Logs enthalten nie
-Prompt-, Akten- oder Modellinhalte, keine Dateinamen aus `fall/` und keine
+Prompt-, Akten- oder Modellinhalte, keine Dateinamen der Akte und keine
 Credentials. Alle Werte werden gegen Log- und Terminal-Injection bereinigt.
 """
 from __future__ import annotations
@@ -87,7 +87,7 @@ def sec_event(event: str, outcome: str, *, komponente: str = "conductor", **feld
     """Ein `[SEC]`-Ereignis protokollieren (TM-AC-21).
 
     `felder` dürfen nur nicht-sensitive Metadaten enthalten (Zähler, Kategorien,
-    Rollen, Indizes, Dauer) – niemals Inhalte, Dateinamen aus `fall/` oder Secrets.
+    Rollen, Indizes, Dauer) – niemals Inhalte, Dateinamen der Akte oder Secrets.
     """
     zeit = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     parts = [

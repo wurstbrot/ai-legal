@@ -25,8 +25,8 @@ Vision und Schmerz zugleich: Timo will zu eigenen Rechtsfällen (Akte aus E-Mail
 ## Capabilities
 
 - **CAP-1**
-  - **intent:** Das Tool nimmt `anweisung.md` und die bereits vorab pseudonymisierte Akte aus `fall/` auf und erstellt Sachverhalt, Chronologie und Lückenliste mit Quellenverweis je Tatsache. Die Pseudonymisierung läuft vorher, unabhängig von `legal`.
-  - **success:** Jede Tatsache im Sachverhalt verweist auf eine Datei in `fall/`.
+  - **intent:** Das Tool nimmt `anweisung.md` und die bereits vorab pseudonymisierte Akte aus dem Fall-Ordner auf und erstellt Sachverhalt, Chronologie und Lückenliste mit Quellenverweis je Tatsache. Die Pseudonymisierung läuft vorher, unabhängig von `legal`.
+  - **success:** Jede Tatsache im Sachverhalt verweist auf eine Akten-Datei des Fall-Ordners.
 - **CAP-2**
   - **intent:** Ein Rechtsprechungs-Researcher sucht im Web nach einschlägigen Normen und Urteilen und führt ein Register (Gericht, Az., Datum, Fundstelle, Status geprüft/ungeprüft/hält nicht); er darf das Ergebnis nicht ändern, nur widersprechen.
   - **success:** Jedes Urteil in `beratung.md` hat einen Registereintrag mit Fundstelle; ein frei erfundenes Az. im Entwurf führt zu einem Widerspruch im Protokoll.
@@ -61,13 +61,14 @@ Vision und Schmerz zugleich: Timo will zu eigenen Rechtsfällen (Akte aus E-Mail
 ## Acceptance criteria
 
 - Die `success`-Kriterien von CAP-1 bis CAP-11 sind durch Tests oder einen dokumentierten Demonstrationslauf belegt.
-- Negative Tests belegen: Anweisungen in `fall/`-Dokumenten und Webseiten werden nicht befolgt; Prüfer können `beratung.md` nicht schreiben; Ergebnis über gesetztem Wortlimit wird nicht final; Urteil ohne Registereintrag wird beanstandet; Nicht-Text-Dateien in `fall/` werden abgelehnt.
+- Negative Tests belegen: Anweisungen in Akten-Dateien und Webseiten werden nicht befolgt; Prüfer können `beratung.md` nicht schreiben; Ergebnis über gesetztem Wortlimit wird nicht final; Urteil ohne Registereintrag wird beanstandet; Nicht-Text-Dateien im Fall-Ordner (inkl. Unterordnern) werden abgelehnt.
 
 ## Constraints
 
-- Die Pseudonymisierung ist nicht Teil von `legal`; sie läuft vorher, unabhängig von diesem Tool. `fall/` enthält bereits pseudonymisierte Texte, ein Mapping liegt nie in `fall/` oder im Container-Mount.
-- Nur `anweisung.md` und die Tool-Prompts steuern; Inhalte aus `fall/` und aus dem Web sind Daten, keine Anweisungen.
-- `fall/` enthält nur `.txt` und `.md`; es gibt keine Konvertierung von E-Mail-, PDF- oder Bildformaten.
+- Die Pseudonymisierung ist nicht Teil von `legal`; sie läuft vorher, unabhängig von diesem Tool. Der Fall-Ordner enthält bereits pseudonymisierte Texte; ein Mapping liegt nie im Fall-Ordner (inkl. Unterordnern) oder im Container-Mount.
+- Nur `anweisung.md` und die Tool-Prompts steuern; Akten-Inhalte und Inhalte aus dem Web sind Daten, keine Anweisungen.
+- Die Akte sind alle Dateien im Fall-Ordner und seinen Unterordnern außer `anweisung.md`, `ergebnis/` und `HOLD` auf oberster Ebene; es gibt keinen eigenen Unterordner `fall/`.
+- Die Akte enthält nur `.txt` und `.md`; es gibt keine Konvertierung von E-Mail-, PDF- oder Bildformaten.
 - Der Researcher braucht Web-Zugriff; Rollen ohne Rechercheauftrag laufen ohne Netz, soweit die CLI das zulässt.
 - Kein Urteil und kein Az. im Ergebnis ohne Registereintrag; ungeprüfte Fundstellen sind sichtbar markiert.
 - Prüfer-Rollen haben keinen Schreibzugriff auf das Ergebnis, durchgesetzt per Mount bzw. Tool-Liste, nicht per Prompt.
@@ -91,7 +92,7 @@ Vision und Schmerz zugleich: Timo will zu eigenen Rechtsfällen (Akte aus E-Mail
 ## Assumptions
 
 - Python (`legal.py`) mit Bash-Wrapper `legal.bash`, damit Docker-Runner, Logging und Review-Logik aus `immobilienbewertung` wiederverwendet werden können.
-- Aufruf `legal.bash` im Fall-Ordner (oder `legal.bash <fallordner>`) mit `anweisung.md` und `fall/` im Fall-Ordner; Code unter `rechtsberatung/`.
+- Aufruf `legal.bash` im Fall-Ordner (oder `legal.bash <fallordner>`) mit `anweisung.md` und den Akten-Dateien im Fall-Ordner; Code unter `rechtsberatung/`.
 - Das Pfad-Argument bleibt optional statt entfernt; Timo verlangte nur, dass es nicht immer angegeben werden muss.
 - Der Mandant kann Kläger oder Beklagter sein; die Seite steht in `anweisung.md`, der Kläger-Anwalt heißt intern Mandanten-Anwalt.
 - Die Modell-ID für Fable 5.2 lautet `claude-fable-5-2`; der Harness wird von Timo aktualisiert.
@@ -101,3 +102,4 @@ Vision und Schmerz zugleich: Timo will zu eigenen Rechtsfällen (Akte aus E-Mail
 
 - 2026-11-16, Timo: Pseudonymisierung aus dem Scope genommen („muss nicht, die läuft vorher unabhängig von diesem Modell“). CAP-1, Constraints, Negativtests und Success signal angepasst; Freigabe am selben Tag mit dieser Änderung.
 - 2026-11-16, Timo (`/bmad-spec`): „es wird immer der aktuelle ordner genommen. das ist der Fall-Ordner und muss nicht immer extra angegeben werden.“ Neue Constraint; Assumptions und Success signal angepasst. Kein neues CAP, CAP-IDs unverändert.
+- 2026-11-16, Timo: „der fall ordner ist auch der aktuelle ordner. auch unterordner sollen angeschaut werden.“ Kein Unterordner `fall/` mehr; Akte rekursiv aus dem Fall-Ordner ohne `anweisung.md`, `ergebnis/`, `HOLD`. CAP-1, Acceptance criteria, Constraints und Assumptions angepasst; CAP-IDs unverändert.

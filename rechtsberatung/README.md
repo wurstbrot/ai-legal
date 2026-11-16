@@ -34,21 +34,28 @@ Repository selbst.
 Fallordner:
 
 ```
-<fallordner>/
-  anweisung.md      # Auftrag (≤ 64 KiB, UTF-8)
-  fall/             # vorab pseudonymisierte Akte: nur .txt/.md, keine Symlinks/Hardlinks/
-                    # Unterordner/versteckten Dateien; je Datei ≤ 2 MiB, ≤ 200 Dateien, ≤ 20 MiB
-  HOLD              # optional: stoppt den Lauf vor der nächsten Runde/Rolle (Exit 4)
-  ergebnis/<lauf-id>/   # wird von legal angelegt
+<fallordner>/            # = aktuelles Verzeichnis
+  anweisung.md          # Auftrag (≤ 64 KiB, UTF-8)
+  *.txt, *.md           # vorab pseudonymisierte Akte, direkt hier ...
+  mails/2026/*.txt      # ... und in beliebigen Unterordnern (rekursiv)
+  HOLD                  # optional: stoppt den Lauf vor der nächsten Runde/Rolle (Exit 4)
+  ergebnis/<lauf-id>/   # wird von legal angelegt, nie als Akte gelesen
 ```
 
+Die Akte sind alle Dateien im Fallordner und seinen Unterordnern, sortiert nach relativem
+Pfad; ausgenommen sind nur `anweisung.md`, `ergebnis/` und `HOLD` auf oberster Ebene. Für
+den ganzen Baum gilt: nur `.txt`/`.md` (andere Dateien führen zum Abbruch, sie werden nicht
+übersprungen), keine Symlinks, Hardlinks oder versteckten Dateien/Ordner; je Datei ≤ 2 MiB,
+≤ 200 Dateien, ≤ 20 MiB, ≤ 2000 Einträge. Unterordner mit anderen Fällen gehören nicht in
+den Fallordner – sie würden mitgelesen.
+
 `legal` pseudonymisiert nicht und prüft die Pseudonymisierung nicht nach; das geschieht
-vorher. Ein Mapping darf nie in `fall/` liegen (`mapping.md` bzw. `LEGAL_MAPPING_NAMEN`
-führt zum Abbruch). Keine Konvertierung von PDF, E-Mail oder Bildern.
+vorher. Ein Mapping darf nie im Fallordner oder einem Unterordner liegen (`mapping.md` bzw.
+`LEGAL_MAPPING_NAMEN` führt zum Abbruch; andere Namen erkennt `legal` nicht). Keine Konvertierung von PDF, E-Mail oder Bildern.
 
 ### Schlüsselzeilen in `anweisung.md` (E-7)
 
-Nur diese Zeilen steuern den Lauf; gleichlautende Zeilen in `fall/` oder in
+Nur diese Zeilen steuern den Lauf; gleichlautende Zeilen in der Akte oder in
 Modellausgaben haben keine Wirkung. Markdown-Schreibweisen wie `- Seite: Kläger` oder
 `**Vergleich:** ja` werden erkannt.
 
@@ -162,7 +169,7 @@ damit die 0700-Arbeitsverzeichnisse lesbar bzw. beschreibbar sind.
 ## Logs
 
 `[SEC]`-Events auf stderr mit Zeitstempel, Nutzer, Lauf-ID, Komponente und Ergebnis.
-Logs enthalten keine Akten-, Prompt- oder Modellinhalte und keine Dateinamen aus `fall/`
+Logs enthalten keine Akten-, Prompt- oder Modellinhalte und keine Dateinamen der Akte
 (nur Index). Steuerzeichen und ANSI/OSC-Sequenzen werden entfernt.
 
 ## Tests

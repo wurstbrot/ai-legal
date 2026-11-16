@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart TD
-  A["anweisung.md + fall/ (vorab pseudonymisiert)"] --> P["Eingangsprüfung: nur .txt/.md, keine Symlinks"]
+  A["Fall-Ordner = aktuelles Verzeichnis: anweisung.md + Akte inkl. Unterordner (vorab pseudonymisiert)"] --> P["Eingangsprüfung rekursiv: nur .txt/.md, keine Symlinks, kein Mapping"]
   P --> S[Sachverhalts-Ermittler: Sachverhalt, Chronologie, Lücken]
   S --> R[Researcher: Normen/Urteile → Register]
   S --> E1[Mandanten-Anwalt Claude: Entwurf]

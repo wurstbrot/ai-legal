@@ -110,14 +110,15 @@ class FakeRunner:
 
 def erstelle_fall(basis: Path, *, anweisung: str = "Ergebnis: Einschätzung\nSeite: Kläger\n",
                   dateien: dict[str, str | bytes] | None = None) -> Path:
-    """Fallordner mit `anweisung.md` und `fall/` anlegen."""
+    """Fallordner mit `anweisung.md` und der Akte direkt darin anlegen; `/` im Namen legt Unterordner an."""
     root = basis / "fallordner"
-    (root / "fall").mkdir(parents=True)
+    root.mkdir(parents=True)
     (root / "anweisung.md").write_text(anweisung, encoding="utf-8")
     if dateien is None:
         dateien = {"01_mail.txt": f"<NAME_1> schreibt am 2026-01-01: Mietvertrag. {KANARIE}"}
     for name, inhalt in dateien.items():
-        p = root / "fall" / name
+        p = root / name
+        p.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(inhalt, bytes):
             p.write_bytes(inhalt)
         else:

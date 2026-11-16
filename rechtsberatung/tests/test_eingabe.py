@@ -1,12 +1,17 @@
-"""Tests der Eingangsprüfung (TM-AC-1, -2, -4, -8, -18; Matrix FALSCHE_ENDUNG … MODELL_ID_UNGUELTIG)."""
+"""Tests der Eingangsprüfung (TM-AC-1, -2, -4, -8, -18; Matrix FALSCHE_ENDUNG … MODELL_ID_UNGUELTIG,
+CWD_OK, CWD_FALSCH, ARG_RELATIV, OHNE_WRAPPER)."""
 from __future__ import annotations
 
+import contextlib
 import datetime
+import io
 import os
 import shutil
+import subprocess  # nosec B404 - Test startet den eigenen Wrapper mit Argumentliste
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from rechtsberatung.eingabe import EingabeFehler, injektions_heuristik, kopiere_neutral, lies_anweisung, \
     pruefe_fallordner
@@ -22,11 +27,11 @@ class Basis(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def lauf_abgewiesen(self, root: Path, reason: str, *, event: str = "legal.input.rejected",
-                        env: dict[str, str] | None = None) -> None:
-        """Erwartet Exit 2, keinen Modellaufruf und das passende [SEC]-Event."""
+                        env: dict[str, str] | None = None, argv: list[str] | None = None) -> list[str]:
+        """Erwartet Exit 2, keinen Modellaufruf und das passende [SEC]-Event; liefert die Logzeilen."""
         runner = FakeRunner()
         with self.assertLogs("legal", level="INFO") as cm:
-            code = main([str(root)], runner=runner, env=env or {}, heute=HEUTE)
+            code = main([str(root)] if argv is None else argv, runner=runner, env=env or {}, heute=HEUTE)
         self.assertEqual(code, 2)
         self.assertEqual(runner.aufrufe, [])
         self.assertTrue(any(f"event={event}" in z and f"reason={reason}" in z for z in cm.output), cm.output)
@@ -34,6 +39,7 @@ class Basis(unittest.TestCase):
             self.assertTrue(any("Abbruch vor jedem Modellaufruf: " in z and "Grund:" not in z for z in cm.output),
                             cm.output)
         self.assertFalse((root / "ergebnis").exists())
+        return cm.output
 
 
 class FallordnerTest(Basis):
@@ -130,6 +136,155 @@ class FallordnerTest(Basis):
         zuordnung = kopiere_neutral(fall.dateien, ziel)
         self.assertEqual(sorted(os.listdir(ziel)), ["dok_001.md", "dok_002.md"])
         self.assertEqual(zuordnung, {"dok_001": 1, "dok_002": 2})
+
+
+class AktuellesVerzeichnisTest(Basis):
+    """Fall-Ordner = aktuelles Verzeichnis, wenn kein Argument übergeben wird (SPEC-Constraint 2026-11-16)."""
+
+    ZUSATZ = "Fall-Ordner ist das aktuelle Verzeichnis"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(os.chdir, os.getcwd())
+
+    def lauf_ok(self, root: Path, argv: list[str], env: dict[str, str]) -> tuple[FakeRunner, list[str]]:
+        runner = FakeRunner()
+        with self.assertLogs("legal", level="INFO") as cm, contextlib.redirect_stdout(io.StringIO()):
+            code = main(argv, runner=runner, env=env, heute=HEUTE)
+        self.assertEqual(code, 0, cm.output)
+        self.assertTrue(runner.aufrufe)
+        laeufe = list((root / "ergebnis").iterdir())
+        self.assertEqual(len(laeufe), 1)
+        self.assertTrue((laeufe[0] / "beratung.md").is_file())
+        return runner, cm.output
+
+    def keine_pfade(self, logs: list[str]) -> None:
+        self.assertFalse(any(str(self.tmp) in z for z in logs), logs)
+
+    def test_cwd_ok_ueber_wrapper(self) -> None:
+        root = erstelle_fall(self.tmp / "ok")
+        os.chdir(self.tmp)   # Python-CWD ist (wie im Wrapper) nicht der Fall-Ordner
+        _, logs = self.lauf_ok(root, [], {"LEGAL_AUFRUF_CWD": str(root)})
+        self.keine_pfade(logs)
+        self.assertFalse((self.tmp / "ergebnis").exists())
+
+    def test_cwd_ok_mit_keep_ohne_pfad(self) -> None:
+        root = erstelle_fall(self.tmp / "keep")
+        runner, _ = self.lauf_ok(root, ["--keep"], {"LEGAL_AUFRUF_CWD": str(root)})
+        basis = runner.aufrufe[0].in_dir.parents[1]
+        self.addCleanup(shutil.rmtree, basis, True)
+        self.assertTrue(basis.exists())
+
+    def test_ohne_wrapper_getcwd(self) -> None:
+        root = erstelle_fall(self.tmp / "ow")
+        os.chdir(root)
+        self.lauf_ok(root, [], {})
+
+    def test_cwd_falsch_ohne_anweisung(self) -> None:
+        leer = self.tmp / "kein_fall"
+        (leer / "fall").mkdir(parents=True)
+        logs = self.lauf_abgewiesen(leer, "missing_anweisung", argv=[], env={"LEGAL_AUFRUF_CWD": str(leer)})
+        self.assertTrue(any(self.ZUSATZ in z for z in logs), logs)
+        self.keine_pfade(logs)
+
+    def test_ohne_wrapper_falscher_ordner(self) -> None:
+        leer = self.tmp / "leer"
+        leer.mkdir()
+        os.chdir(leer)
+        logs = self.lauf_abgewiesen(leer, "missing_anweisung", argv=[])
+        self.assertTrue(any(self.ZUSATZ in z for z in logs), logs)
+        self.keine_pfade(logs)
+
+    def test_kein_hochsuchen_in_elternordnern(self) -> None:
+        root = erstelle_fall(self.tmp / "eltern")
+        os.chdir(root / "fall")
+        self.lauf_abgewiesen(root / "fall", "missing_anweisung", argv=[])
+        self.assertFalse((root / "ergebnis").exists())
+
+    def test_gates_gelten_auch_fuer_cwd(self) -> None:
+        root = erstelle_fall(self.tmp / "endung", dateien={"a.md": "ok", "x.pdf": "inhalt"})
+        logs = self.lauf_abgewiesen(root, "extension", argv=[], env={"LEGAL_AUFRUF_CWD": str(root)})
+        self.assertTrue(any(self.ZUSATZ in z for z in logs), logs)
+        root = erstelle_fall(self.tmp / "map", dateien={"a.md": "ok", "mapping.md": "NAME_1 = Max"})
+        os.chdir(root)
+        self.lauf_abgewiesen(root, "mapping", event="legal.mount.unsafe", argv=[])
+        root = erstelle_fall(self.tmp / "sym")
+        ziel = self.tmp / "fremd"
+        shutil.move(str(root / "fall"), ziel)
+        os.symlink(ziel, root / "fall")
+        self.lauf_abgewiesen(root, "symlink", argv=[], env={"LEGAL_AUFRUF_CWD": str(root)})
+
+    def test_arg_relativ_unveraendert_und_ohne_zusatz(self) -> None:
+        root = erstelle_fall(self.tmp / "rel")
+        self.lauf_ok(root, ["fallordner"], {"LEGAL_AUFRUF_CWD": str(self.tmp / "rel")})
+        falsch = self.tmp / "relfalsch" / "fallordner"
+        falsch.mkdir(parents=True)
+        logs = self.lauf_abgewiesen(falsch, "missing_anweisung", argv=["fallordner"],
+                                    env={"LEGAL_AUFRUF_CWD": str(self.tmp / "relfalsch")})
+        self.assertFalse(any(self.ZUSATZ in z for z in logs), logs)
+
+    def test_geloeschtes_cwd_os_fehler_mit_hinweis(self) -> None:
+        with mock.patch("os.getcwd", side_effect=FileNotFoundError):
+            logs = self.lauf_abgewiesen(self.tmp, "os_error", argv=[])
+        self.assertTrue(any(self.ZUSATZ in z for z in logs), logs)
+        self.keine_pfade(logs)
+
+    def test_hilfe_fallordner_optional(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as cm:
+            main(["--help"], runner=FakeRunner(), env={})
+        self.assertEqual(cm.exception.code, 0)
+        text = " ".join(out.getvalue().split())
+        self.assertIn("[fallordner]", text)
+        self.assertIn("Default: das aktuelle Verzeichnis", text)
+
+
+class WrapperTest(unittest.TestCase):
+    """`legal.bash` ohne Argument: Fall-Ordner kommt aus dem Aufruf-cwd (auch über Symlink); ohne Docker."""
+
+    WRAPPER = Path(__file__).resolve().parents[1] / "legal.bash"
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        heim = self.tmp / "home"
+        heim.mkdir()
+        # Ohne API-Keys und mit leerem HOME endet jeder gültige Lauf im Credentials-Preflight (Exit 2).
+        self.env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(heim)}
+
+    def starte(self, wrapper: Path, cwd: Path) -> tuple[int, str]:
+        r = subprocess.run([str(wrapper)], cwd=cwd, env=self.env, capture_output=True,  # nosec B603
+                           timeout=120, check=False)
+        # Logs gehen nach stderr, die Ergebniszeile nach stdout; beide prüfen.
+        return r.returncode, (r.stdout + r.stderr).decode("utf-8", errors="replace")
+
+    def pruefe_gueltig(self, wrapper: Path) -> None:
+        root = erstelle_fall(self.tmp / "gueltig")
+        code, ausgabe = self.starte(wrapper, root)
+        self.assertEqual(code, 2, ausgabe)
+        self.assertIn("event=legal.credentials.missing", ausgabe)
+        self.assertNotIn("reason=missing_anweisung", ausgabe)
+        self.assertFalse((root / "ergebnis").exists())
+
+    def test_gueltiger_fallordner_aus_cwd(self) -> None:
+        self.pruefe_gueltig(self.WRAPPER)
+
+    def test_leerer_ordner(self) -> None:
+        leer = self.tmp / "leer"
+        leer.mkdir()
+        code, ausgabe = self.starte(self.WRAPPER, leer)
+        self.assertEqual(code, 2, ausgabe)
+        self.assertIn("reason=missing_anweisung", ausgabe)
+        self.assertIn("Fall-Ordner ist das aktuelle Verzeichnis", ausgabe)
+        self.assertNotIn(str(leer), ausgabe)
+        self.assertFalse((leer / "ergebnis").exists())
+
+    def test_aufruf_ueber_symlink(self) -> None:
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        link = bin_dir / "legal"
+        os.symlink(self.WRAPPER, link)
+        self.pruefe_gueltig(link)
 
 
 class AnweisungTest(Basis):

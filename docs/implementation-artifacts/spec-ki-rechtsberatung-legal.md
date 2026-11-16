@@ -202,6 +202,7 @@ Reihenfolge nach Abhängigkeit. Jede Datei unter `rechtsberatung/`, deutsche Kom
 ## Spec Change Log
 
 - 2026-11-16, Entscheidung Timo nach Abschluss: „Proxy ist für den Research Agenten immer frei.“ Der Recherche-Proxy läuft mit `LEGAL_ALLOW=*`, also jeder Hostname auf Port 443; private Zieladressen und IP-Literale bleiben gesperrt. `register.url_erlaubt` akzeptiert jede öffentliche https-URL. Der Researcher-Prompt nennt die E-4-Liste nur noch als bevorzugte Quellen. Für klickbare Links im Ergebnis gilt weiter die E-4-Liste (TM-AC-23). Damit gelten Schritt 3 (Recherche-Allowlist), Schritt 8 (`geprüft` ⇔ Allowlist) und der Allowlist-Fall in Tasks & Acceptance für die Recherche nicht mehr. Maßgeblich ist der Abschnitt „Änderungen nach Freigabe“ im Threat Model. Tests: `egress-proxy.test.js` (offener Proxy, private Adresse, Port ≠ 443) und `RegisterTest` (fremde öffentliche Fundstelle wird `geprüft`; http, IP, localhost und Fremdport werden es nicht).
+- 2026-11-16, SPEC-Constraint: `fallordner` optional, Default aktuelles Verzeichnis; Umsetzung siehe spec-legal-fallordner-cwd.md.
 
 ## Review Triage Log
 

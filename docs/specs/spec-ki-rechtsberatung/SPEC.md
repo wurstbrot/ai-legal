@@ -100,4 +100,4 @@ Vision und Schmerz zugleich: Timo will zu eigenen Rechtsfällen (Akte aus E-Mail
 ## Änderungsprotokoll
 
 - 2026-11-16, Timo: Pseudonymisierung aus dem Scope genommen („muss nicht, die läuft vorher unabhängig von diesem Modell“). CAP-1, Constraints, Negativtests und Success signal angepasst; Freigabe am selben Tag mit dieser Änderung.
-- 2026-11-16, Timo (`/bmad-spec`): „Es wird immer der aktuelle Ordner genommen; das ist der Fall-Ordner und muss nicht extra angegeben werden.“ Neue Constraint; Assumptions und Success signal angepasst. Kein neues CAP, CAP-IDs unverändert.
+- 2026-11-16, Timo (`/bmad-spec`): „es wird immer der aktuelle ordner genommen. das ist der Fall-Ordner und muss nicht immer extra angegeben werden.“ Neue Constraint; Assumptions und Success signal angepasst. Kein neues CAP, CAP-IDs unverändert.

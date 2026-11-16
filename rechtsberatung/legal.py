@@ -1,4 +1,7 @@
-"""CLI-Einstieg `legal` (`legal.bash <fallordner> [--keep]`).
+"""CLI-Einstieg `legal` (`legal.bash [fallordner] [--keep]`).
+
+Ohne `fallordner` gilt das Verzeichnis des Aufrufers als Fall-Ordner
+(`LEGAL_AUFRUF_CWD` vom Wrapper, sonst `os.getcwd()`).
 
 Exit-Codes: 0 final, 1 unerwarteter Fehler, 2 Eingabe/Konfiguration,
 3 nicht final, 4 Hold/Budget/Laufzeit. Ausgaben liegen unter
@@ -33,7 +36,9 @@ def neue_lauf_id(jetzt: datetime.datetime | None = None) -> str:
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="legal.bash", description="KI-Rechtsanwalt-Beratung (Entwurf für Timo).")
-    p.add_argument("fallordner", help="Ordner mit anweisung.md und fall/ (nur .txt/.md, vorab pseudonymisiert)")
+    p.add_argument("fallordner", nargs="?", default=None,
+                   help="Ordner mit anweisung.md und fall/ (nur .txt/.md, vorab pseudonymisiert); "
+                        "optional, Default: das aktuelle Verzeichnis")
     p.add_argument("--keep", action="store_true", help="Arbeitsverzeichnisse nach dem Lauf behalten (E-9)")
     return p
 
@@ -51,6 +56,20 @@ def _ergebnis_basis(root: Path) -> Path:
     return basis
 
 
+def _fallordner(argument: str | None, umgebung: dict[str, str]) -> Path:
+    """Fall-Ordner bestimmen: Argument (relativ zu `LEGAL_AUFRUF_CWD`) oder das Aufrufverzeichnis.
+
+    Kein Hochsuchen in Elternverzeichnissen; die Gates in `pruefe_fallordner` gelten unverändert.
+    """
+    aufruf_cwd = umgebung.get("LEGAL_AUFRUF_CWD")
+    if argument is None:
+        return Path(aufruf_cwd) if aufruf_cwd else Path(os.getcwd())
+    pfad = Path(argument)
+    if not pfad.is_absolute() and aufruf_cwd:
+        pfad = Path(aufruf_cwd) / pfad
+    return pfad
+
+
 def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None,
          env: dict[str, str] | None = None, heute: datetime.date | None = None,
          uhr: Callable[[], float] | None = None, host_home: Path | None = None,
@@ -61,12 +80,10 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None,
     lauf_id = neue_lauf_id()
     setze_lauf_id(lauf_id)
     umgebung = dict(os.environ if env is None else env)
+    zusatz = " (Fall-Ordner ist das aktuelle Verzeichnis)" if args.fallordner is None else ""
     try:
         konfig = lade_konfig(umgebung)
-        pfad = Path(args.fallordner)
-        if not pfad.is_absolute() and umgebung.get("LEGAL_AUFRUF_CWD"):
-            pfad = Path(umgebung["LEGAL_AUFRUF_CWD"]) / pfad
-        fall = pruefe_fallordner(pfad, konfig.mapping_namen)
+        fall = pruefe_fallordner(_fallordner(args.fallordner, umgebung), konfig.mapping_namen)
         anweisung = lies_anweisung(fall.anweisung)
         if runner is None:
             # Preflight vor dem ersten Modellaufruf: Credentials je Familie (E-3) und Image-ID.
@@ -90,13 +107,14 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None,
         return EXIT_EINGABE
     except (EingabeFehler, MountUnsicher) as exc:
         progress("Fallordner ungültig – Abbruch vor jedem Modellaufruf: "
-                 + hinweis(exc.reason, getattr(exc, "file_index", None)))
+                 + hinweis(exc.reason, getattr(exc, "file_index", None)) + zusatz)
         return EXIT_EINGABE
     except OSError as exc:
         # z. B. fehlende Leserechte auf fall/ oder ergebnis/ nicht anlegbar; keine Pfade ins Log.
         sec_event("legal.input.rejected", "rejected", komponente="eingabe", reason="os_error",
                   error=type(exc).__name__)
-        progress("Fallordner nicht lesbar oder Ergebnisordner nicht anlegbar – Abbruch vor jedem Modellaufruf")
+        progress("Fallordner nicht lesbar oder Ergebnisordner nicht anlegbar – Abbruch vor jedem Modellaufruf"
+                 + zusatz)
         return EXIT_EINGABE
 
     arbeits_dir = Path(tempfile.mkdtemp(prefix="legal-"))   # mkdtemp legt 0700 an

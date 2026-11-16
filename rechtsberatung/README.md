@@ -1,9 +1,10 @@
 # `legal` – KI-Rechtsanwalt-Beratung (Entwurf für Timo)
 
-`legal.bash <fallordner>` erstellt zu einem eigenen Rechtsfall das in `anweisung.md`
-verlangte Ergebnis. Mehrere Rollen auf zwei Modellfamilien (Claude Code, Codex) prüfen
-sich gegenseitig. Ein deterministischer Conductor (Host-Python, kein LLM) steuert den
-Ablauf, prüft jede Container-Ausgabe und schreibt als einziger die Ergebnisdateien.
+`legal.bash`, im Fallordner aufgerufen, erstellt zu einem eigenen Rechtsfall das in
+`anweisung.md` verlangte Ergebnis. Mehrere Rollen auf zwei Modellfamilien (Claude
+Code, Codex) prüfen sich gegenseitig. Ein deterministischer Conductor (Host-Python,
+kein LLM) steuert den Ablauf, prüft jede Container-Ausgabe und schreibt als einziger
+die Ergebnisdateien.
 
 **Das Ergebnis ist ein KI-Entwurf, keine Rechtsberatung. Prüfung, Entscheidung und
 Versand erfolgen durch Timo.** `legal` versendet und reicht nichts ein.
@@ -15,8 +16,20 @@ Maßgeblich: `docs/specs/spec-ki-rechtsberatung/SPEC.md`, Threat Model
 ## Aufruf
 
 ```bash
+cd <fallordner> && /pfad/zu/rechtsberatung/legal.bash [--keep]
+# oder, Pfad optional:
 rechtsberatung/legal.bash /pfad/zum/fallordner [--keep]
 ```
+
+Ohne Argument gilt das aktuelle Verzeichnis als Fallordner; es wird nicht in
+Elternverzeichnissen nach `anweisung.md` gesucht. Ein relativer Pfad bezieht sich auf das
+Verzeichnis des Aufrufers. Alle Eingabe-Gates gelten in beiden Fällen gleich; der
+Fallordner darf nicht in einem Cloud-Sync-Ordner liegen (E-6).
+
+Bequemer Aufruf: einmalig einen Symlink anlegen, z. B.
+`ln -s /pfad/zu/rechtsberatung/legal.bash ~/bin/legal` (oder einen Alias), dann im
+Fallordner nur `legal` aufrufen. Der Wrapper löst Symlinks auf und findet das
+Repository selbst.
 
 Fallordner:
 

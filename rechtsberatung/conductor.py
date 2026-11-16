@@ -368,7 +368,7 @@ class Conductor:
                     "registercheck", "codex",
                     {"register_eintraege.json": json.dumps(nur_eintraege, ensure_ascii=False, indent=1)},
                     prompts.registercheck(), "bestaetigung.json", schema_bestaetigung, autor="claude")
-        self.register = baue_register(roh_register, bestaetigung, domains=self.k.research_domains, heute=self.heute)
+        self.register = baue_register(roh_register, bestaetigung, heute=self.heute)
         register_md = bereinige_markdown(register_markdown(self.register), self.k.research_domains,
                                          komponente="register")
         schreibe_datei(self.ergebnis / "register.md", register_md)

@@ -1,7 +1,9 @@
 'use strict';
 // Egress-Proxy für `legal` (E-1, TM-AC-7). Nur Node-Standardbibliothek.
 // Erlaubt ausschließlich CONNECT auf Port 443 zu exakten Domains (oder deren Subdomains)
-// aus LEGAL_ALLOW. Alles andere: 403 und eine Logzeile
+// aus LEGAL_ALLOW. LEGAL_ALLOW="*" (Recherche-Proxy, Entscheidung Timo 2026-11-16) erlaubt jeden
+// gültigen Hostnamen; Port 443, Hostname statt IP-Literal und die Sperre privater Adressen gelten
+// weiter. Alles andere: 403 und eine Logzeile
 // "[SEC] event=legal.egress.denied role=<LEGAL_PROXY_ROLE> domain=<host>" (ohne Pfad/Query).
 
 const http = require('node:http');
@@ -13,6 +15,7 @@ const HOST_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{
 const ROLLEN = new Set(['api', 'recherche']);
 
 function parseAllow(text) {
+  if (String(text || '').trim() === '*') return ['*'];
   return String(text || '')
     .split(',')
     .map((d) => d.trim().toLowerCase())
@@ -27,6 +30,7 @@ function bereinigeHost(host) {
 function istErlaubt(host, allow) {
   const h = bereinigeHost(host);
   if (h === 'invalid') return false;
+  if (allow.length === 1 && allow[0] === '*') return true;
   return allow.some((d) => h === d || h.endsWith('.' + d));
 }
 

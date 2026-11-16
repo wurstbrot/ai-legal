@@ -33,7 +33,9 @@ IMAGE_RE = re.compile(
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 
 LLM_DOMAINS_DEFAULT = ("api.anthropic.com", "api.openai.com", "chatgpt.com", "auth.openai.com")
-# E-4: freigegebene Urteils- und Normendatenbanken (keine Paywall-Quellen).
+# E-4 (geändert 2026-11-16, Entscheidung Timo): keine Netz-Allowlist mehr für die Recherche.
+# Die Liste nennt bevorzugte Quellen im Researcher-Prompt und die Domains, deren Links im
+# Ergebnis klickbar bleiben; Links auf andere Domains erscheinen entschärft als Text.
 RESEARCH_DOMAINS_DEFAULT = (
     "rechtsprechung-im-internet.de", "gesetze-im-internet.de", "bundesgerichtshof.de",
     "bundesverfassungsgericht.de", "bundesarbeitsgericht.de", "bundessozialgericht.de",

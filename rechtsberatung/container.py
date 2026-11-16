@@ -291,19 +291,24 @@ _BEREIT_JS = ("require('net').connect(3128,'127.0.0.1')"
 class Netzwerke:
     """Kontextmanager: je Lauf zwei interne Netze mit je einem Egress-Proxy (E-1).
 
+    `api` erlaubt nur die LLM-Domains; `recherche` (Researcher, Register-Bestätiger) ist offen für
+    jeden öffentlichen Hostnamen auf Port 443.
+
     Die Proxys hängen zusätzlich an einem eigenen, nicht internen Egress-Netz des Laufs (nicht am
     Default-Bridge-Netz), damit fremde Container den Proxy nicht erreichen. Rollen-Container
     starten erst, wenn beide Proxys auf Port 3128 annehmen.
     """
 
     def __init__(self, lauf_id: str, *, image: str, llm_domains: Sequence[str],
-                 research_domains: Sequence[str], run: Callable[..., subprocess.CompletedProcess[bytes]] = _run,
+                 run: Callable[..., subprocess.CompletedProcess[bytes]] = _run,
                  schlaf: Callable[[float], None] = time.sleep, bereit_versuche: int = 30) -> None:
         self.lauf_id = _pruefe_name(lauf_id)
         self.image = image
         self.allow = {
             "api": ",".join(llm_domains),
-            "recherche": ",".join([*llm_domains, *research_domains]),
+            # Entscheidung Timo 2026-11-16: Recherche-Proxy ohne Domain-Liste (E-4 geändert). Port 443,
+            # Hostnamen statt IP-Literalen und die Sperre privater Adressen bleiben (egress-proxy.js).
+            "recherche": "*",
         }
         self._run = run
         self._schlaf = schlaf

@@ -244,8 +244,7 @@ class NetzwerkeTest(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, out, b"")
 
         with self.assertLogs("legal", level="INFO") as cm:
-            with Netzwerke("lauf1", image="legal:1", llm_domains=["api.anthropic.com"],
-                           research_domains=["dejure.org"], run=run) as netze:
+            with Netzwerke("lauf1", image="legal:1", llm_domains=["api.anthropic.com"], run=run) as netze:
                 self.assertEqual(netze["api"].name, "legal-lauf1-api")
         erstellt = [b for b in befehle if b[:2] == ["network", "create"]]
         self.assertEqual(len(erstellt), 3)
@@ -257,7 +256,7 @@ class NetzwerkeTest(unittest.TestCase):
         api = next(b for b in proxies if "LEGAL_PROXY_ROLE=api" in b)
         self.assertIn("LEGAL_ALLOW=api.anthropic.com", api)
         rech = next(b for b in proxies if "LEGAL_PROXY_ROLE=recherche" in b)
-        self.assertIn("LEGAL_ALLOW=api.anthropic.com,dejure.org", rech)
+        self.assertIn("LEGAL_ALLOW=*", rech)   # Recherche offen (Entscheidung Timo 2026-11-16)
         for flag in ("--read-only", "no-new-privileges:true", "ALL", f"{os.getuid()}:{os.getgid()}"):
             self.assertIn(flag, api)
         self.assertEqual(api[api.index("--network") + 1], "legal-lauf1-egress")
@@ -282,7 +281,7 @@ class NetzwerkeTest(unittest.TestCase):
             return subprocess.CompletedProcess(argv, rc, b"", b"")
 
         with self.assertRaises(RuntimeError):
-            with Netzwerke("lauf1", image="legal:1", llm_domains=["a.com"], research_domains=[], run=run):
+            with Netzwerke("lauf1", image="legal:1", llm_domains=["a.com"], run=run):
                 pass
         self.assertIn(["rm", "-f", "legal-lauf1-proxy-api"], befehle)
         self.assertIn(["network", "rm", "legal-lauf1-api"], befehle)
@@ -296,7 +295,7 @@ class NetzwerkeTest(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 1 if argv[1:3] == ["run", "-d"] else 0, b"", b"")
 
         with self.assertRaises(RuntimeError):
-            with Netzwerke("lauf1", image="legal:1", llm_domains=["a.com"], research_domains=[], run=run):
+            with Netzwerke("lauf1", image="legal:1", llm_domains=["a.com"], run=run):
                 pass
         self.assertIn(["rm", "-f", "legal-lauf1-proxy-api"], befehle)
 
@@ -309,7 +308,7 @@ class NetzwerkeTest(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 1 if argv[1] == "exec" else 0, b"", b"")
 
         with self.assertLogs("legal", level="INFO") as cm, self.assertRaisesRegex(RuntimeError, "nicht bereit"):
-            with Netzwerke("lauf1", image="legal:1", llm_domains=["a.com"], research_domains=[], run=run,
+            with Netzwerke("lauf1", image="legal:1", llm_domains=["a.com"], run=run,
                            schlaf=pausen.append, bereit_versuche=4):
                 self.fail("darf nicht erreicht werden")
         self.assertEqual(len([b for b in befehle if b[0] == "exec"]), 4)

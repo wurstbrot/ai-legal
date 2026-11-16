@@ -54,7 +54,7 @@ class NetzUndIsolationTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.lauf = f"it{int(time.time())}"
         k = lade_konfig({})
-        self.netz = Netzwerke(self.lauf, image=IMAGE, llm_domains=k.llm_domains, research_domains=k.research_domains)
+        self.netz = Netzwerke(self.lauf, image=IMAGE, llm_domains=k.llm_domains)
         self.netze = self.netz.__enter__()
         self.addCleanup(self.netz.__exit__, None, None, None)
 

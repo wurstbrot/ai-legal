@@ -118,14 +118,18 @@ def bestaetigung(**kw: object) -> dict:
 
 class RegisterTest(unittest.TestCase):
     def status(self, roh: dict, best: dict | None) -> str:
-        return baue_register(roh, best, domains=DOMAINS, heute=HEUTE).eintraege[0].status
+        return baue_register(roh, best, heute=HEUTE).eintraege[0].status
 
     def test_geprueft_nur_mit_allen_bedingungen(self) -> None:
         self.assertEqual(self.status(roh_register(), bestaetigung()), GEPRUEFT)
 
-    def test_ausserhalb_allowlist_ungeprueft(self) -> None:
-        for url in ("https://evil.example/x", "http://dejure.org/x", "https://dejure.org.evil.com/x",
-                    "https://user@dejure.org/x", "https://dejure.org:8443/x"):
+    def test_fremde_oeffentliche_fundstelle_kann_geprueft_werden(self) -> None:
+        # Entscheidung Timo 2026-11-16: Recherche ohne Domain-Liste.
+        self.assertEqual(self.status(roh_register(url="https://www.lto.de/urteil/x"), bestaetigung()), GEPRUEFT)
+
+    def test_unzulaessige_fundstelle_ungeprueft(self) -> None:
+        for url in ("http://dejure.org/x", "https://127.0.0.1/x", "https://[::1]/x", "file:///etc/passwd",
+                    "https://user@dejure.org/x", "https://dejure.org:8443/x", "https://localhost/x"):
             with self.subTest(url=url):
                 self.assertEqual(self.status(roh_register(url=url), bestaetigung()), UNGEPRUEFT)
 
@@ -139,7 +143,7 @@ class RegisterTest(unittest.TestCase):
         self.assertEqual(self.status(roh_register(), bestaetigung(az="VIII ZR 124/24")), HAELT_NICHT)
         with self.assertLogs("legal", level="INFO"):
             reg = baue_register(roh_register(datum="2027-01-01"), bestaetigung(datum="2027-01-01"),
-                                domains=DOMAINS, heute=HEUTE)
+                                heute=HEUTE)
         self.assertEqual(reg.eintraege[0].status, UNGEPRUEFT)
 
     def test_extrahiere_zitate(self) -> None:
@@ -178,7 +182,7 @@ class RegisterTest(unittest.TestCase):
         self.assertEqual(extrahiere_zitate("§ 3 Abs. 12.20 und 2,5 C"), [])
 
     def test_zitat_nur_ueber_zitate_bleibt_ungeprueft(self) -> None:
-        reg = baue_register(roh_register(), bestaetigung(), domains=DOMAINS, heute=HEUTE)
+        reg = baue_register(roh_register(), bestaetigung(), heute=HEUTE)
         self.assertEqual(reg.eintraege[0].status, GEPRUEFT)
         pr = zitat_gate("Siehe NJW 2024, 123 und VIII ZR 123/24.", reg)
         self.assertEqual([z for z, _ in pr.ungeprueft], ["NJW 2024, 123"])
@@ -187,14 +191,14 @@ class RegisterTest(unittest.TestCase):
 
     def test_zitat_gate_haelt_nicht(self) -> None:
         with self.assertLogs("legal", level="INFO"):
-            reg = baue_register(roh_register(), bestaetigung(az="VIII ZR 999/24"), domains=DOMAINS, heute=HEUTE)
+            reg = baue_register(roh_register(), bestaetigung(az="VIII ZR 999/24"), heute=HEUTE)
         pr = zitat_gate("Nach BGH VIII ZR 123/24.", reg)
         self.assertEqual([z for z, _ in pr.haelt_nicht], ["VIII ZR 123/24"])
         self.assertEqual(pr.widersprueche, ["Zitat hält nicht (Bestätigung weicht ab): VIII ZR 123/24"])
         self.assertEqual(pr.ungeprueft, [])
 
     def test_zitat_gate_unregistriert(self) -> None:
-        reg = baue_register(roh_register(), bestaetigung(), domains=DOMAINS, heute=HEUTE)
+        reg = baue_register(roh_register(), bestaetigung(), heute=HEUTE)
         with self.assertLogs("legal", level="INFO") as cm:
             pr = zitat_gate("Nach BGH VIII ZR 999/25 und VIII ZR 123/24 sowie NJW 2024, 123.", reg)
         self.assertEqual(pr.unregistriert, ["VIII ZR 999/25"])

@@ -64,6 +64,37 @@ class Anweisung:
     gesetzte_schluessel: tuple[str, ...] = field(default=())
 
 
+# Hinweise für Timo je Ablehnungsgrund; enthalten nur feste Namen, keine Pfade oder Inhalte.
+HINWEISE = {
+    "path": "Fallordner existiert nicht oder ist kein Verzeichnis.",
+    "missing_anweisung": "Im Fallordner fehlt die Datei 'anweisung.md' (genau so: klein, Endung .md).",
+    "missing_fall": "Im Fallordner fehlt das Unterverzeichnis 'fall/' mit den Akten-Dateien (.txt/.md).",
+    "symlink": "Symbolische Links sind nicht erlaubt (anweisung.md, fall/ oder eine Datei darin).",
+    "type": "anweisung.md muss eine normale Datei und fall/ ein Verzeichnis sein; in fall/ nur normale Dateien.",
+    "hardlink": "Hardlinks sind nicht erlaubt.",
+    "hidden": "Versteckte Dateien (Name beginnt mit '.') in fall/ sind nicht erlaubt.",
+    "directory": "Unterverzeichnisse in fall/ sind nicht erlaubt; alle Dateien direkt in fall/ ablegen.",
+    "extension": "In fall/ sind nur .txt- und .md-Dateien erlaubt.",
+    "size": "Zu groß: max. 2 MiB je Datei, 200 Dateien, 20 MiB gesamt, anweisung.md max. 64 KiB.",
+    "encoding": "Datei ist kein gültiges UTF-8 oder enthält NUL-Zeichen.",
+    "empty": "fall/ enthält keine Dateien.",
+    "unreadable": "Datei nicht lesbar (Rechte prüfen).",
+    "instruction_duplicate": "Eine Schlüsselzeile (Ergebnis/Seite/Wortlimit/Personas/Vergleich) steht mehrfach in anweisung.md.",
+    "instruction_value": "Ungültiger Wert in anweisung.md: Ergebnis: <Text ≤ 80 Zeichen>, Seite: Kläger|Beklagter, "
+                         "Wortlimit: 50–20000, Personas: an|aus, Vergleich: ja|nein.",
+    "mapping": "In fall/ liegt eine Mapping-Datei (z. B. mapping.md); sie darf nie mit an die Modelle.",
+    "cli_config": "Im Mount liegt eine CLI-Konfiguration (z. B. CLAUDE.md, .claude, AGENTS.md).",
+}
+
+
+def hinweis(reason: str, file_index: int | None = None) -> str:
+    """Verständlicher Hinweis zum Ablehnungsgrund (ohne Pfade/Inhalte)."""
+    text = HINWEISE.get(reason, f"Grund: {reason}")
+    if file_index is not None:
+        text += f" (betrifft die {file_index}. Datei in fall/, alphabetisch sortiert)"
+    return text
+
+
 def _abweisen(reason: str, index: int | None = None) -> EingabeFehler:
     felder = {"reason": reason}
     if index is not None:
@@ -138,9 +169,12 @@ def pruefe_fallordner(pfad: Path, mapping_namen: tuple[str, ...]) -> Fallordner:
     fall = root / "fall"
     try:
         st_a = os.lstat(anweisung)
+    except OSError as exc:
+        raise _abweisen("missing_anweisung") from exc
+    try:
         st_f = os.lstat(fall)
     except OSError as exc:
-        raise _abweisen("missing") from exc
+        raise _abweisen("missing_fall") from exc
     if stat.S_ISLNK(st_a.st_mode) or stat.S_ISLNK(st_f.st_mode):
         raise _abweisen("symlink")
     if not stat.S_ISREG(st_a.st_mode) or not stat.S_ISDIR(st_f.st_mode):

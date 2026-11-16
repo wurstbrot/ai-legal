@@ -30,6 +30,9 @@ class Basis(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(runner.aufrufe, [])
         self.assertTrue(any(f"event={event}" in z and f"reason={reason}" in z for z in cm.output), cm.output)
+        if reason != "os_error":   # jeder Ablehnungsgrund hat einen verständlichen Hinweis
+            self.assertTrue(any("Abbruch vor jedem Modellaufruf: " in z and "Grund:" not in z for z in cm.output),
+                            cm.output)
         self.assertFalse((root / "ergebnis").exists())
 
 
@@ -82,7 +85,10 @@ class FallordnerTest(Basis):
     def test_fehlende_anweisung_und_symlink_ordner(self) -> None:
         root = erstelle_fall(self.tmp / "f")
         (root / "anweisung.md").unlink()
-        self.lauf_abgewiesen(root, "missing")
+        self.lauf_abgewiesen(root, "missing_anweisung")
+        root = erstelle_fall(self.tmp / "f1")
+        shutil.rmtree(root / "fall")
+        self.lauf_abgewiesen(root, "missing_fall")
         root = erstelle_fall(self.tmp / "f2")
         ziel = self.tmp / "anderer_fall"
         shutil.move(str(root / "fall"), ziel)

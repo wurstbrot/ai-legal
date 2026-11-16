@@ -96,7 +96,7 @@ nur erwartete Namen, ohne Symlinks/Hardlinks, ≤ 1 MiB.
 | `LEGAL_REVIEW_RUNDEN` | 1 |
 | `LEGAL_IMAGE` | `legal:1` |
 | `LEGAL_LLM_DOMAINS` (ersetzt) | `api.anthropic.com, api.openai.com, chatgpt.com, auth.openai.com` |
-| `LEGAL_RESEARCH_DOMAINS` (ergänzt E-4) | Liste aus E-4 |
+| `LEGAL_RESEARCH_DOMAINS` (ergänzt) | Liste aus E-4; nur noch bevorzugte Quellen und klickbare Links im Ergebnis, keine Netzsperre |
 | `LEGAL_PSEUDONYM_REGEX` | `<[A-ZÄÖÜ_]+_?\d+>\|\b[A-ZÄÖÜ]{3,}_\d+\b` |
 | `LEGAL_MAPPING_NAMEN` | zusätzlich zu `mapping.md` |
 | `LEGAL_LOG_LEVEL` | `INFO` |
@@ -121,9 +121,13 @@ Image-ID aufgelöst; alle Container laufen über diese ID, sie steht in `protoko
 `protokoll.jsonl`. Je Lauf entstehen zwei `docker network create --internal`-Netze (`api`,
 `recherche`) mit je einem Proxy-Container; die Proxys hängen zusätzlich an einem eigenen,
 nicht internen Egress-Netz des Laufs (nicht am Default-Bridge-Netz). Rollen-Container starten
-erst, wenn beide Proxys auf Port 3128 annehmen. Der Proxy erlaubt nur `CONNECT`
-auf Port 443 zu den freigegebenen Domains (inkl. Subdomains), sperrt private Zieladressen
-und loggt Ablehnungen als `[SEC] event=legal.egress.denied role=<r> domain=<d>`.
+erst, wenn beide Proxys auf Port 3128 annehmen. Beide Proxys erlauben nur `CONNECT` auf
+Port 443 zu Hostnamen (keine IP-Literale), sperren private Zieladressen und loggen Ablehnungen als
+`[SEC] event=legal.egress.denied role=<r> domain=<d>`. Der `api`-Proxy lässt nur die LLM-Domains
+durch. Der `recherche`-Proxy (Researcher und Register-Bestätiger) ist nach Entscheidung von Timo
+(2026-11-16) **für alle öffentlichen Domains offen** (`LEGAL_ALLOW=*`). Fundstellen von
+beliebigen Domains können im Register `geprüft` werden; im Ergebnis bleiben nur Links auf
+`LEGAL_RESEARCH_DOMAINS` klickbar, andere erscheinen entschärft als Text ohne Query.
 
 ## Credentials (E-3)
 

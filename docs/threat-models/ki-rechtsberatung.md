@@ -180,3 +180,11 @@ Timo hat das Threat Model am 2026-11-16 nach Vorlage der Zusammenfassung (Schutz
 | E-11 | R-1 bis R-7 akzeptiert; R-8 entfällt (E-1). |
 | E-12 | Mapping-Gate (TM-AC-4) und Symlink-Ablehnung (TM-AC-1) werden umgesetzt. |
 | E-13 | SPEC-Anpassung bestätigt (Änderungsprotokoll in `SPEC.md`). |
+
+## Änderungen nach Freigabe
+
+| Datum | Entscheidung (Timo) | Wirkung |
+|---|---|---|
+| 2026-11-16 | „Proxy ist für den Research Agenten immer frei.“ | **E-4 geändert:** Der Recherche-Proxy (Researcher und Register-Bestätiger) hat keine Domain-Allowlist mehr (`LEGAL_ALLOW=*`). Weiter gelten: nur `CONNECT` auf Port 443, nur Hostnamen (keine IP-Literale), Sperre privater, Loopback- und Link-Local-Zieladressen nach DNS-Auflösung, `[SEC]`-Log bei Ablehnung. Der `api`-Proxy der übrigen Rollen bleibt auf die LLM-Domains beschränkt (E-1 unverändert). **TM-AC-7** gilt für den Researcher ohne Domain-Prüfung; Test: offener Proxy verweigert private Adressen und Port ≠ 443. **TM-AC-13 (a)** lautet nun „öffentliche `https`-URL mit Hostname, Port 443, ohne Benutzerdaten“; Test: fremde öffentliche Fundstelle kann `geprüft` werden, `http`, IP-Literale, `localhost` und Fremdports nicht. Die Liste aus E-4 (`LEGAL_RESEARCH_DOMAINS`) bleibt als bevorzugte Quellen im Researcher-Prompt und als Liste der im Ergebnis klickbaren Links; Links auf andere Domains erscheinen entschärft ohne Query. |
+
+**Neues Restrisiko R-9 (Folge der Entscheidung, ausdrückliche Annahme durch Timo noch offen):** Researcher und Register-Bestätiger können beliebige öffentliche Seiten abrufen. Das vergrößert die Fläche für Prompt-Injection aus Webseiten (T-04) und erlaubt Abflüsse an beliebige Domains (T-06). Begrenzt wird das durch die Eingaben: Der Researcher erhält nur abstrakte Rechtsfragen ohne Personendaten (E-2, TM-AC-9), der Bestätiger nur ID und URL. Hinzu kommen die Host-Gates (Rückkanal-Schema, Zitat-Gate, Blindbestätigung) und die unveränderte Sperre interner Netze.

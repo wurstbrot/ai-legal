@@ -20,7 +20,7 @@ from typing import Callable, Sequence
 from .conductor import EXIT_EINGABE, EXIT_FEHLER, EXIT_STOPP, Conductor, Runner
 from .config import FAMILIEN, KonfigFehler, lade_konfig
 from .container import DockerRunner, Netzwerke, credentials_vorhanden, ermittle_image_id, installiere_signal_handler
-from .eingabe import EingabeFehler, MountUnsicher, lies_anweisung, pruefe_fallordner
+from .eingabe import EingabeFehler, MountUnsicher, hinweis, lies_anweisung, pruefe_fallordner
 from .ergebnis import erstelle_verzeichnis
 from .logging_setup import get_logger, progress, sec_event, setze_lauf_id, terminal_sicher
 
@@ -88,8 +88,9 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None,
         sec_event("legal.config.rejected", "rejected", komponente="config")
         progress("Konfiguration ungültig – Abbruch vor jedem Modellaufruf")
         return EXIT_EINGABE
-    except (EingabeFehler, MountUnsicher):
-        progress("Fallordner ungültig – Abbruch vor jedem Modellaufruf")
+    except (EingabeFehler, MountUnsicher) as exc:
+        progress("Fallordner ungültig – Abbruch vor jedem Modellaufruf: "
+                 + hinweis(exc.reason, getattr(exc, "file_index", None)))
         return EXIT_EINGABE
     except OSError as exc:
         # z. B. fehlende Leserechte auf fall/ oder ergebnis/ nicht anlegbar; keine Pfade ins Log.
@@ -110,8 +111,7 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None,
         else:
             installiere_signal_handler(lauf_id)
             # Alle Container laufen über die einmal aufgelöste, unveränderliche Image-ID.
-            with Netzwerke(lauf_id, image=image_id, llm_domains=konfig.llm_domains,
-                           research_domains=konfig.research_domains) as netze:
+            with Netzwerke(lauf_id, image=image_id, llm_domains=konfig.llm_domains) as netze:
                 code = Conductor(runner=DockerRunner(image=image_id, netze=netze, env=umgebung,
                                                      host_home=host_home), **kwargs).lauf()
     except KeyboardInterrupt:

@@ -1,7 +1,7 @@
 """Rechtsprechungs-Register und Zitat-Gate (CAP-2, TM-AC-12, TM-AC-13).
 
 Den Status eines Eintrags setzt ausschließlich der Host:
-`geprüft` ⇔ https-URL auf der Recherche-Allowlist ∧ Bestätigung der anderen
+`geprüft` ⇔ öffentliche https-URL (Hostname, Port 443) ∧ Bestätigung der anderen
 Modellfamilie mit übereinstimmendem Gericht/Az./Datum ∧ Datum ≤ heute.
 Eine abweichende Bestätigung ergibt `hält nicht`, alles andere `ungeprüft`.
 """
@@ -12,7 +12,7 @@ import re
 import urllib.parse
 from dataclasses import dataclass, field
 
-from .config import domain_erlaubt
+from .config import DOMAIN_RE
 from .logging_setup import sec_event
 
 GEPRUEFT, UNGEPRUEFT, HAELT_NICHT = "geprüft", "ungeprüft", "hält nicht"
@@ -82,8 +82,12 @@ class Register:
         return None
 
 
-def url_erlaubt(url: str, domains: tuple[str, ...]) -> bool:
-    """https-URL ohne Benutzerdaten/Port-Tricks auf einer freigegebenen Domain."""
+def url_erlaubt(url: str) -> bool:
+    """https-URL mit Hostnamen (kein IP-Literal), ohne Benutzerdaten/Port-Tricks.
+
+    Seit der Entscheidung von Timo vom 2026-11-16 ist die Recherche nicht mehr auf eine
+    Domain-Liste beschränkt; jede öffentliche Fundstelle kann `geprüft` werden.
+    """
     try:
         teile = urllib.parse.urlsplit(url)
     except ValueError:
@@ -92,7 +96,7 @@ def url_erlaubt(url: str, domains: tuple[str, ...]) -> bool:
         return False
     if teile.port not in (None, 443):
         return False
-    return domain_erlaubt(teile.hostname, domains)
+    return bool(DOMAIN_RE.fullmatch(teile.hostname.lower().rstrip(".")))
 
 
 def _datum_ok(s: str, heute: datetime.date) -> bool:
@@ -102,8 +106,7 @@ def _datum_ok(s: str, heute: datetime.date) -> bool:
         return False
 
 
-def baue_register(roh: dict, bestaetigungen: dict | None, *, domains: tuple[str, ...],
-                  heute: datetime.date) -> Register:
+def baue_register(roh: dict, bestaetigungen: dict | None, *, heute: datetime.date) -> Register:
     """Register aus Researcher-Ausgabe und Bestätigung der anderen Familie zusammenführen.
 
     Der Bestätiger erhält nur ID und URL (Blindbestätigung) und liest Gericht/Az./Datum selbst
@@ -115,8 +118,8 @@ def baue_register(roh: dict, bestaetigungen: dict | None, *, domains: tuple[str,
         e = Eintrag(id=r["id"], gericht=r["gericht"], az=r["az"], datum=r["datum"], url=r["url"],
                     ecli=r.get("ecli", "-"), zitate=list(r.get("zitate", [])))
         b = best.get(e.id)
-        if not url_erlaubt(e.url, domains):
-            e.status, e.grund = UNGEPRUEFT, "Fundstelle nicht auf der Allowlist oder kein https"
+        if not url_erlaubt(e.url):
+            e.status, e.grund = UNGEPRUEFT, "Fundstelle keine öffentliche https-URL"
         elif not _datum_ok(e.datum, heute):
             e.status, e.grund = UNGEPRUEFT, "Datum ungültig oder in der Zukunft"
         elif b is None or not b["abgerufen"]:

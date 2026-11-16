@@ -27,6 +27,18 @@ test('fremde Domains und Suffix-Tricks sind verboten', () => {
   assert.ok(!istErlaubt('', allow));
 });
 
+test('Recherche-Proxy "*" erlaubt jeden gültigen Hostnamen, aber keine IP-Literale', () => {
+  const frei = parseAllow(' * ');
+  assert.deepStrictEqual(frei, ['*']);
+  assert.ok(istErlaubt('example.org', frei));
+  assert.ok(istErlaubt('www.lto.de', frei));
+  assert.ok(!istErlaubt('127.0.0.1', frei));
+  assert.ok(!istErlaubt('x.org/?d=geheim', frei));
+  assert.ok(!istErlaubt('', frei));
+  // "*" nur als alleiniger Wert; in einer Liste ist es ungültig und wird verworfen.
+  assert.deepStrictEqual(parseAllow('dejure.org,*'), ['dejure.org']);
+});
+
 test('Host-Bereinigung für Logs entfernt alles außer Hostnamen', () => {
   assert.strictEqual(bereinigeHost('Example.ORG'), 'example.org');
   assert.strictEqual(bereinigeHost('x.org/?d=geheim'), 'invalid');
@@ -84,6 +96,22 @@ test('erlaubte Domain, die auf eine private Adresse auflöst, wird mit 403 verwe
     server.close();
   }
   assert.deepStrictEqual(zeilen, ['[SEC] event=legal.egress.denied role=recherche domain=dejure.org\n']);
+});
+
+test('offener Recherche-Proxy verweigert private Zieladressen und Port ≠ 443', async () => {
+  const zeilen = [];
+  const lookup = (host, _opts, cb) => cb(null, '192.168.1.10', 4);
+  const server = erstelleServer(parseAllow('*'), 'recherche', (z) => zeilen.push(z), lookup);
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  try {
+    assert.strictEqual(await connect(port, 'fritz.box.example.org:443'), 403);
+    assert.strictEqual(await connect(port, 'example.org:80'), 403);
+    assert.strictEqual(await connect(port, '10.0.0.1:443'), 403);
+  } finally {
+    server.close();
+  }
+  assert.strictEqual(zeilen.length, 3);
 });
 
 test('Verbindungsabbruch des Clients beendet den Proxy nicht', async () => {

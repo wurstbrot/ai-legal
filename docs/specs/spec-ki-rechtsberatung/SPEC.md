@@ -75,6 +75,7 @@ Vision und Schmerz zugleich: Timo will zu eigenen Rechtsfällen (Akte aus E-Mail
 - Das Gewicht ist ein Faktor in der Benotung: Mandanten-Anwalt 1.0, Richter 0.5, Gegenanwalt 0.5; konfigurierbar.
 - Das Wortlimit ist nicht fest; es kommt aus `anweisung.md` oder entfällt.
 - Das Ergebnis ist ein KI-Entwurf zur Entscheidung durch Timo; nichts wird automatisch versendet oder eingereicht.
+- Der Fall-Ordner ist das aktuelle Arbeitsverzeichnis; `legal.bash` braucht kein Argument, ein Pfad-Argument ist optional.
 
 ## Non-goals
 
@@ -85,12 +86,13 @@ Vision und Schmerz zugleich: Timo will zu eigenen Rechtsfällen (Akte aus E-Mail
 
 ## Success signal
 
-- `legal.bash <fallordner>` liefert für einen realen Fall das in `anweisung.md` verlangte Ergebnis, dessen Urteile alle mit Fundstelle im Register stehen, mit Gegenargumenten, Richtereinschätzung, Fristen und einer Entscheidungsliste für Timo.
+- `legal.bash`, im Fall-Ordner ohne Argument aufgerufen, liefert für einen realen Fall das in `anweisung.md` verlangte Ergebnis, dessen Urteile alle mit Fundstelle im Register stehen, mit Gegenargumenten, Richtereinschätzung, Fristen und einer Entscheidungsliste für Timo.
 
 ## Assumptions
 
 - Python (`legal.py`) mit Bash-Wrapper `legal.bash`, damit Docker-Runner, Logging und Review-Logik aus `immobilienbewertung` wiederverwendet werden können.
-- Aufruf `legal.bash <fallordner>` mit `<fallordner>/anweisung.md` und `<fallordner>/fall/`; Code unter `rechtsberatung/`.
+- Aufruf `legal.bash` im Fall-Ordner (oder `legal.bash <fallordner>`) mit `anweisung.md` und `fall/` im Fall-Ordner; Code unter `rechtsberatung/`.
+- Das Pfad-Argument bleibt optional statt entfernt; Timo verlangte nur, dass es nicht immer angegeben werden muss.
 - Der Mandant kann Kläger oder Beklagter sein; die Seite steht in `anweisung.md`, der Kläger-Anwalt heißt intern Mandanten-Anwalt.
 - Die Modell-ID für Fable 5.2 lautet `claude-fable-5-2`; der Harness wird von Timo aktualisiert.
 - „anweisung.txt“ in Timos Antwort ist ein Tippfehler für `anweisung.md`.
@@ -98,3 +100,4 @@ Vision und Schmerz zugleich: Timo will zu eigenen Rechtsfällen (Akte aus E-Mail
 ## Änderungsprotokoll
 
 - 2026-11-16, Timo: Pseudonymisierung aus dem Scope genommen („muss nicht, die läuft vorher unabhängig von diesem Modell“). CAP-1, Constraints, Negativtests und Success signal angepasst; Freigabe am selben Tag mit dieser Änderung.
+- 2026-11-16, Timo (`/bmad-spec`): „Es wird immer der aktuelle Ordner genommen; das ist der Fall-Ordner und muss nicht extra angegeben werden.“ Neue Constraint; Assumptions und Success signal angepasst. Kein neues CAP, CAP-IDs unverändert.

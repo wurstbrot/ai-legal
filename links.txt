@@ -1,0 +1,3 @@
+https://github.com/anthropics/claude-for-legal
+https://github.com/Klotzkette/claude-fuer-deutsches-recht
+https://skills.lc/Klotzkette/claude-fuer-deutsches-recht/klotzkette-claude-fuer-deutsches-recht-immobilienrechtspraxis-skills-vertragspruefung-playbook-skill-md

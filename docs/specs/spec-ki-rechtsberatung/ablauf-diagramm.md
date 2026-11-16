@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart TD
-  A[anweisung.md + fall/] --> P[Pseudonymisierung fail-closed]
+  A["anweisung.md + fall/ (vorab pseudonymisiert)"] --> P["Eingangsprüfung: nur .txt/.md, keine Symlinks"]
   P --> S[Sachverhalts-Ermittler: Sachverhalt, Chronologie, Lücken]
   S --> R[Researcher: Normen/Urteile → Register]
   S --> E1[Mandanten-Anwalt Claude: Entwurf]

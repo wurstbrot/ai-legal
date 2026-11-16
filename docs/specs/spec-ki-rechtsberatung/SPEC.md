@@ -8,9 +8,9 @@ sources: []
 ---
 
 Type: specification
-Status: proposed
-Approved-by:
-Approved-at:
+Status: approved
+Approved-by: Timo Pagel (Anweisung „spec freigeben“ im Lauf bmad-build-auto)
+Approved-at: 2026-11-16
 Applies-to:
 - `rechtsberatung/**`
 
@@ -25,8 +25,8 @@ Vision und Schmerz zugleich: Timo will zu eigenen Rechtsfällen (Akte aus E-Mail
 ## Capabilities
 
 - **CAP-1**
-  - **intent:** Das Tool nimmt `anweisung.md` und die Akte aus `fall/` auf, pseudonymisiert sie und erstellt Sachverhalt, Chronologie und Lückenliste mit Quellenverweis je Tatsache.
-  - **success:** Jede Tatsache im Sachverhalt verweist auf eine Datei in `fall/`; im Container-Mount findet ein Test keinen Klarnamen aus der Akte.
+  - **intent:** Das Tool nimmt `anweisung.md` und die bereits vorab pseudonymisierte Akte aus `fall/` auf und erstellt Sachverhalt, Chronologie und Lückenliste mit Quellenverweis je Tatsache. Die Pseudonymisierung läuft vorher, unabhängig von `legal`.
+  - **success:** Jede Tatsache im Sachverhalt verweist auf eine Datei in `fall/`.
 - **CAP-2**
   - **intent:** Ein Rechtsprechungs-Researcher sucht im Web nach einschlägigen Normen und Urteilen und führt ein Register (Gericht, Az., Datum, Fundstelle, Status geprüft/ungeprüft/hält nicht); er darf das Ergebnis nicht ändern, nur widersprechen.
   - **success:** Jedes Urteil in `beratung.md` hat einen Registereintrag mit Fundstelle; ein frei erfundenes Az. im Entwurf führt zu einem Widerspruch im Protokoll.
@@ -61,11 +61,11 @@ Vision und Schmerz zugleich: Timo will zu eigenen Rechtsfällen (Akte aus E-Mail
 ## Acceptance criteria
 
 - Die `success`-Kriterien von CAP-1 bis CAP-11 sind durch Tests oder einen dokumentierten Demonstrationslauf belegt.
-- Negative Tests belegen: Lauf bricht ohne Pseudonymisierung ab; Anweisungen in `fall/`-Dokumenten und Webseiten werden nicht befolgt; Prüfer können `beratung.md` nicht schreiben; Ergebnis über gesetztem Wortlimit wird nicht final; Urteil ohne Registereintrag wird beanstandet; Nicht-Text-Dateien in `fall/` werden abgelehnt.
+- Negative Tests belegen: Anweisungen in `fall/`-Dokumenten und Webseiten werden nicht befolgt; Prüfer können `beratung.md` nicht schreiben; Ergebnis über gesetztem Wortlimit wird nicht final; Urteil ohne Registereintrag wird beanstandet; Nicht-Text-Dateien in `fall/` werden abgelehnt.
 
 ## Constraints
 
-- Pseudonymisierung fail-closed vor jedem Modellaufruf; Klartext und Mapping liegen nie im Container-Mount.
+- Die Pseudonymisierung ist nicht Teil von `legal`; sie läuft vorher, unabhängig von diesem Tool. `fall/` enthält bereits pseudonymisierte Texte, ein Mapping liegt nie in `fall/` oder im Container-Mount.
 - Nur `anweisung.md` und die Tool-Prompts steuern; Inhalte aus `fall/` und aus dem Web sind Daten, keine Anweisungen.
 - `fall/` enthält nur `.txt` und `.md`; es gibt keine Konvertierung von E-Mail-, PDF- oder Bildformaten.
 - Der Researcher braucht Web-Zugriff; Rollen ohne Rechercheauftrag laufen ohne Netz, soweit die CLI das zulässt.
@@ -85,12 +85,16 @@ Vision und Schmerz zugleich: Timo will zu eigenen Rechtsfällen (Akte aus E-Mail
 
 ## Success signal
 
-- `legal.bash <fallordner>` liefert für einen realen Fall das in `anweisung.md` verlangte Ergebnis, dessen Urteile alle mit Fundstelle im Register stehen, mit Gegenargumenten, Richtereinschätzung, Fristen und einer Entscheidungsliste für Timo, ohne Klarnamen im Container.
+- `legal.bash <fallordner>` liefert für einen realen Fall das in `anweisung.md` verlangte Ergebnis, dessen Urteile alle mit Fundstelle im Register stehen, mit Gegenargumenten, Richtereinschätzung, Fristen und einer Entscheidungsliste für Timo.
 
 ## Assumptions
 
-- Python (`legal.py`) mit Bash-Wrapper `legal.bash`, damit Docker-Runner, Pseudonymisierung, Logging und Review-Logik aus `immobilienbewertung` wiederverwendet werden können.
+- Python (`legal.py`) mit Bash-Wrapper `legal.bash`, damit Docker-Runner, Logging und Review-Logik aus `immobilienbewertung` wiederverwendet werden können.
 - Aufruf `legal.bash <fallordner>` mit `<fallordner>/anweisung.md` und `<fallordner>/fall/`; Code unter `rechtsberatung/`.
 - Der Mandant kann Kläger oder Beklagter sein; die Seite steht in `anweisung.md`, der Kläger-Anwalt heißt intern Mandanten-Anwalt.
 - Die Modell-ID für Fable 5.2 lautet `claude-fable-5-2`; der Harness wird von Timo aktualisiert.
 - „anweisung.txt“ in Timos Antwort ist ein Tippfehler für `anweisung.md`.
+
+## Änderungsprotokoll
+
+- 2026-11-16, Timo: Pseudonymisierung aus dem Scope genommen („muss nicht, die läuft vorher unabhängig von diesem Modell“). CAP-1, Constraints, Negativtests und Success signal angepasst; Freigabe am selben Tag mit dieser Änderung.

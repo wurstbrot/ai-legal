@@ -1,0 +1,5 @@
+# Nur die für den Build nötigen Dateien in den Kontext (keine .env, .git, Schlüssel, Tests).
+*
+!package.json
+!package-lock.json
+!egress-proxy.js

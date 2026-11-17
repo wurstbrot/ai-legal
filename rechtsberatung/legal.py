@@ -1,4 +1,4 @@
-"""CLI-Einstieg `legal` (`legal.bash [fallordner] [--keep]`).
+"""CLI-Einstieg `legal` (`legal.bash [fallordner] [--keep] [--debug] [--fortsetzen [LAUF_ID]]`).
 
 Ohne `fallordner` gilt das Verzeichnis des Aufrufers als Fall-Ordner
 (`LEGAL_AUFRUF_CWD` vom Wrapper, sonst `os.getcwd()`).
@@ -23,6 +23,7 @@ from typing import Callable, Sequence
 from .conductor import EXIT_EINGABE, EXIT_FEHLER, EXIT_STOPP, Conductor, Runner
 from .config import FAMILIEN, KonfigFehler, lade_konfig
 from .container import DockerRunner, Netzwerke, credentials_vorhanden, ermittle_image_id, installiere_signal_handler
+from .fortsetzung import Fortsetzung, FortsetzungFehler, waehle_quelle
 from .eingabe import EingabeFehler, MountUnsicher, hinweis, lies_anweisung, pruefe_fallordner
 from .ergebnis import erstelle_verzeichnis
 from .logging_setup import get_logger, progress, sec_event, setze_lauf_id, terminal_sicher
@@ -41,6 +42,12 @@ def _parser() -> argparse.ArgumentParser:
                         "pseudonymisiert); "
                         "optional, Default: das aktuelle Verzeichnis")
     p.add_argument("--keep", action="store_true", help="Arbeitsverzeichnisse nach dem Lauf behalten (E-9)")
+    p.add_argument("--fortsetzen", nargs="?", const="letzter", default=None, metavar="LAUF_ID",
+                   help="Ausgaben eines früheren Laufs (Default: der letzte in ergebnis/) wiederverwenden, "
+                        "soweit Rolle, Modell und alle Eingaben unverändert sind")
+    p.add_argument("--debug", action="store_true",
+                   help="stdout/stderr jedes Containers nach <arbeitsverzeichnis>/NNN_rolle_familie/std*.txt "
+                        "schreiben (nie ins Log) und das Arbeitsverzeichnis behalten (impliziert --keep)")
     return p
 
 
@@ -101,7 +108,16 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None,
                 sec_event("legal.image.unresolved", "rejected", komponente="preflight")
                 progress("Image nicht auflösbar (gebaut? docker verfügbar?) – Abbruch")
                 return EXIT_EINGABE
+        fortsetzung = None
+        if args.fortsetzen is not None:
+            quelle = waehle_quelle(_ergebnis_basis(fall.root), args.fortsetzen, lauf_id)
+            fortsetzung = Fortsetzung(quelle)
+            progress(f"Fortsetzung aus Lauf {fortsetzung.lauf_id}: {len(fortsetzung)} wiederverwendbare Ausgaben")
         ergebnis_dir = erstelle_verzeichnis(_ergebnis_basis(fall.root) / lauf_id)
+    except FortsetzungFehler as exc:
+        sec_event("legal.resume.rejected", "rejected", komponente="fortsetzung", reason=exc.reason)
+        progress("Fortsetzung nicht möglich (" + exc.reason + "): Lauf-ID prüfen oder ohne --fortsetzen starten")
+        return EXIT_EINGABE
     except KonfigFehler:
         sec_event("legal.config.rejected", "rejected", komponente="config")
         progress("Konfiguration ungültig – Abbruch vor jedem Modellaufruf")
@@ -122,7 +138,8 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None,
     code = EXIT_FEHLER
     try:
         kwargs = {"konfig": konfig, "fall": fall, "anweisung": anweisung, "ergebnis_dir": ergebnis_dir,
-                  "arbeits_dir": arbeits_dir, "lauf_id": lauf_id, "heute": heute, "image_id": image_id}
+                  "arbeits_dir": arbeits_dir, "lauf_id": lauf_id, "heute": heute, "image_id": image_id,
+                  "fortsetzung": fortsetzung}
         if uhr is not None:
             kwargs["uhr"] = uhr
         if runner is not None:
@@ -132,7 +149,7 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None,
             # Alle Container laufen über die einmal aufgelöste, unveränderliche Image-ID.
             with Netzwerke(lauf_id, image=image_id, llm_domains=konfig.llm_domains) as netze:
                 code = Conductor(runner=DockerRunner(image=image_id, netze=netze, env=umgebung,
-                                                     host_home=host_home), **kwargs).lauf()
+                                                     host_home=host_home, debug=args.debug), **kwargs).lauf()
     except KeyboardInterrupt:
         sec_event("legal.run.not_final", "aborted", reason="signal")
         code = EXIT_STOPP
@@ -141,8 +158,8 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None,
         progress("Unerwarteter Fehler (z. B. Docker oder Image nicht verfügbar) – Lauf abgebrochen")
         code = EXIT_FEHLER
     finally:
-        if args.keep:
-            progress("Arbeitsverzeichnis behalten (--keep): " + str(arbeits_dir))
+        if args.keep or args.debug:
+            progress("Arbeitsverzeichnis behalten (--keep/--debug): " + str(arbeits_dir))
         else:
             shutil.rmtree(arbeits_dir, ignore_errors=True)
     print(terminal_sicher(f"Ergebnis: {ergebnis_dir} (Exit {code})"))

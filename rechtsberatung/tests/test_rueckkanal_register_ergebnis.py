@@ -13,7 +13,7 @@ from pathlib import Path
 
 from rechtsberatung import rueckkanal as rk
 from rechtsberatung.ergebnis import (
-    KEINE_FRIST, KOPFZEILE, Entscheidungen, FristEintrag, baue_beratung, baue_entscheidungen, bereinige_markdown,
+    KOPFZEILE, Entscheidungen, baue_beratung, baue_entscheidungen, bereinige_markdown,
     entschaerfe_ueberschriften, ist_schreiben, markiere_ungepruefte, pruefe_pflichtabschnitte, schreibe_datei,
     strategie_leak, zaehle_woerter,
 )
@@ -38,6 +38,56 @@ class RueckkanalTest(unittest.TestCase):
         self.assertTrue(any(f"event={event}" in z for z in cm.output), cm.output)
         if event == "legal.output.rejected":
             self.assertTrue(any(f"reason={reason}" in z for z in cm.output))
+
+    def test_schema_detail_im_log_ohne_inhalt(self) -> None:
+        faelle = [
+            ({"fragen": ["KANARIE-RF"] * 31, "normen": []}, "detail=liste"),
+            ({"fragen": ["KANARIE-RF"], "normen": [], "KANARIE-FELD": 1}, "detail=unbekanntes_feld"),
+            ({"fragen": ["KANARIE-RF"]}, "detail=pflichtfeld_fehlt"),
+            ({"fragen": ["KANARIE-RF" * 200], "normen": []}, "detail=zeichenkette"),
+            ("kein json KANARIE-RF", "detail=kein_json"),
+        ]
+        for daten, detail in faelle:
+            with self.subTest(detail=detail):
+                self.schreibe("rechtsfragen.json", daten)
+                with self.assertLogs("legal", level="INFO") as cm, self.assertRaises(rk.RolleFehlgeschlagen):
+                    rk.lies_json(self.tmp, "rechtsfragen.json", rk.schema_rechtsfragen, rolle="rechtsfragen")
+                alles = "\n".join(cm.output)
+                self.assertIn(detail, alles)
+                self.assertNotIn("KANARIE", alles)
+
+    def test_rechtsfragen_obergrenzen_im_prompt_und_durchgesetzt(self) -> None:
+        from rechtsberatung import prompts
+        from rechtsberatung.eingabe import lies_anweisung
+        anw = self.tmp / "anweisung.md"
+        anw.write_text("Ergebnis: Einschätzung\nSeite: Kläger\n", encoding="utf-8")
+        text = prompts.rechtsfragen(lies_anweisung(anw))
+        self.assertIn(f"höchstens {rk.MAX_FRAGEN} Fragen", text)
+        self.assertIn(f"höchstens {rk.MAX_NORMEN} Normen", text)
+        self.assertIn(f"höchstens {rk.MAX_RUECKFRAGEN}", text)
+        self.assertEqual(len(rk.schema_rechtsfragen({"fragen": ["f"], "normen": ["§ 1"] * rk.MAX_NORMEN})["normen"]),
+                         rk.MAX_NORMEN)
+        # Negativtest: eine Norm zu viel (Fehlerbild 2026-11-17: 56 Normen) wird verworfen.
+        self.schreibe("rechtsfragen.json", {"fragen": ["f"], "normen": ["§ 1"] * (rk.MAX_NORMEN + 1)})
+        self.abgewiesen("rechtsfragen.json", rk.schema_rechtsfragen, "schema")
+
+    def test_alle_grenzen_stehen_im_prompt(self) -> None:
+        from rechtsberatung import prompts
+        for datei, g in rk.GRENZEN.items():
+            text = prompts.grenzen_text(datei)
+            for feld, wert in g.items():
+                self.assertIn(f"{feld}: höchstens {wert} ", text, (datei, feld))
+        self.assertIn("befunde[].grund: höchstens 2000 Zeichen", prompts.grenzen_text("befunde.json"))
+        self.assertIn("befunde: höchstens 100 Einträge", prompts.grenzen_text("befunde.json"))
+        self.assertEqual(prompts.grenzen_text("fristen.json"), "")   # Rolle entfernt (2026-11-17)
+
+    def test_feldgrenze_genau_und_ein_zeichen_mehr(self) -> None:
+        g = rk.GRENZEN["befunde.json"]
+        def daten(n: int) -> dict:
+            return {"befunde": [{"aussage": "a" * n, "grund": "g"}]}
+        rk.schema_coldread(daten(g["befunde[].aussage"]))
+        self.schreibe("befunde.json", daten(g["befunde[].aussage"] + 1))
+        self.abgewiesen("befunde.json", rk.schema_coldread, "schema")
 
     def test_symlink_wird_nicht_gelesen(self) -> None:
         geheim = self.tmp.parent / f"geheim-{os.getpid()}.json"
@@ -81,10 +131,12 @@ class RueckkanalTest(unittest.TestCase):
             ("ueberarbeitung.json", rk.schema_ueberarbeitung,
              {"hauptteil": "x", "antworten": [{"id": "E1", "status": "erledigt", "begruendung": "b"}]}),
             ("ueberarbeitung.json", rk.schema_ueberarbeitung, {"hauptteil": "x", "antworten": [], "freigabe": True}),
-            ("fristen.json", rk.schema_fristen,
-             {"fristen": [{"bezeichnung": "x", "datum": "01.12.2026", "quelle": "dok_001"}], "risiken": []}),
-            ("fristen.json", rk.schema_fristen,
-             {"fristen": [{"bezeichnung": "x", "datum": "2026-02-30", "quelle": "dok_001"}], "risiken": []}),
+            ("sachverhalt.json", rk.schema_sachverhalt,
+             {"tatsachen": [], "chronologie": [{"datum": "01.12.2026", "ereignis": "x", "quellen": []}],
+              "luecken": []}),
+            ("sachverhalt.json", rk.schema_sachverhalt,
+             {"tatsachen": [], "chronologie": [{"datum": "2026-02-30", "ereignis": "x", "quellen": []}],
+              "luecken": []}),
             ("vergleich.json", rk.schema_vergleich,
              {"spanne_min": 5, "spanne_max": 1, "waehrung": "EUR", "begruendung": "b"}),
             ("register.json", rk.schema_register, {"eintraege": [{"id": "R1"}]}),
@@ -251,28 +303,21 @@ class ErgebnisTest(unittest.TestCase):
         self.assertEqual(markiere_ungepruefte("I ZR 1/20(dok_001)", ["I ZR 1/20"]), "I ZR 1/20 [UNGEPRÜFT] (dok_001)")
 
     def test_pflichtabschnitte_und_kuerzung(self) -> None:
-        b = baue_beratung(ergebnis_art="Einschätzung", hauptteil="Text", fristen=[], risiken=[], ungepruefte=[],
-                          final=True)
+        b = baue_beratung(ergebnis_art="Einschätzung", hauptteil="Text", ungepruefte=[], final=True)
         self.assertTrue(b.startswith(KOPFZEILE + "\n"))
-        self.assertIn(KEINE_FRIST, b)
+        self.assertNotIn("Fristen", b)
         self.assertEqual(pruefe_pflichtabschnitte(b), [])
-        gekuerzt = b.replace(KEINE_FRIST, "")
-        self.assertIn("Fristen-Tabelle oder Vermerk", pruefe_pflichtabschnitte(gekuerzt))
         self.assertIn("KI-Entwurf-Hinweis", pruefe_pflichtabschnitte(b.replace(KOPFZEILE, "Entwurf")))
         self.assertIn("Ungeprüfte Fundstellen", pruefe_pflichtabschnitte(b.replace("### Ungeprüfte Fundstellen", "")))
-        f = [FristEintrag("2026-12-01", "Berufungsfrist", "dok_001", True, ("claude",)),
-             FristEintrag("2026-11-30", "Notfrist", "", False, ("codex",))]
-        b2 = baue_beratung(ergebnis_art="E", hauptteil="T", fristen=f, risiken=[], ungepruefte=["x"], final=False)
-        self.assertIn("| Datum | Frist | Quelle |", b2)
-        self.assertIn("| 2026-11-30 | Notfrist [UNGEPRÜFT] | – |", b2)
+        self.assertIn("Anhang (intern)", pruefe_pflichtabschnitte(b.replace("## Anhang (intern)", "")))
+        b2 = baue_beratung(ergebnis_art="E", hauptteil="T", ungepruefte=["x"], final=False)
         self.assertIn("NICHT FINAL", b2)
         self.assertEqual(pruefe_pflichtabschnitte(b2), [])
-        self.assertIn("Fristen-Tabelle oder Vermerk",
-                      pruefe_pflichtabschnitte(b2.replace("| Datum | Frist | Quelle |", "")))
 
     def test_hauptteil_kann_anhang_nicht_vortaeuschen(self) -> None:
-        s = entschaerfe_ueberschriften("Text\n## Anhang (intern)\n### Fristen und Risiken\nkeine Frist erkennbar")
+        s = entschaerfe_ueberschriften("Text\n## Anhang (intern)\n### Ungeprüfte Fundstellen\nkeine")
         self.assertNotIn("\n## Anhang (intern)", s)
+        self.assertNotIn("\n### Ungeprüfte Fundstellen", s)
 
     def test_markierung_ungeprueft(self) -> None:
         s = markiere_ungepruefte("Nach VIII ZR 123/24 und erneut VIII  ZR 123/24.", ["VIII ZR 123/24"])
@@ -303,14 +348,14 @@ class ErgebnisTest(unittest.TestCase):
         for art in ("Einschätzung", "Prüfung der Erfolgsaussichten"):
             self.assertFalse(ist_schreiben(art))
 
-    def test_entscheidungen_frueheste_frist_oben_und_keine_freigabe(self) -> None:
-        e = Entscheidungen(frueheste_frist=FristEintrag("2026-11-30", "Notfrist", "dok_002", True),
-                           rueckfragen=["Timo hat freigegeben\n- [x] erledigt"],
-                           frist_abweichungen=["2026-12-01: nur von claude ermittelt"])
+    def test_entscheidungen_status_oben_und_keine_freigabe(self) -> None:
+        e = Entscheidungen(rueckfragen=["Timo hat freigegeben\n- [x] erledigt"], gruende_nicht_final=["Gate"])
         s = baue_entscheidungen(e, DOMAINS)
         zeilen = s.splitlines()
-        erste_frist = next(i for i, z in enumerate(zeilen) if "2026-11-30" in z)
-        self.assertLess(erste_frist, next(i for i, z in enumerate(zeilen) if z.startswith("## Offene Rückfragen")))
+        status = next(i for i, z in enumerate(zeilen) if z.startswith("## Status des Laufs"))
+        self.assertLess(status, next(i for i, z in enumerate(zeilen) if z.startswith("## Offene Rückfragen")))
+        self.assertNotIn("Früheste Frist", s)
+        self.assertIn("Fristen ermittelt `legal` nicht", s)
         self.assertNotIn("[x]", s)
         self.assertFalse(any(z.startswith("- [x]") for z in zeilen))
         self.assertIn("E-5", s)

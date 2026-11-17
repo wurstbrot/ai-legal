@@ -43,6 +43,22 @@ class ImageTest(unittest.TestCase):
         self.assertNotEqual(docker("run", "--rm", IMAGE, "sh", "-c", "command -v ssh").returncode, 0)
         self.assertNotEqual(docker("run", "--rm", IMAGE, "sh", "-c", "command -v sudo").returncode, 0)
 
+    def test_ca_bundle_vorhanden_und_nicht_beschreibbar(self) -> None:
+        # Codex (Rust) braucht das System-CA-Bundle; ohne es scheitert jede TLS-Verbindung.
+        skript = ('test -n "$SSL_CERT_FILE" && test "$(grep -c "BEGIN CERTIFICATE" "$SSL_CERT_FILE")" -ge 100 '
+                  '&& echo ok')
+        self.assertEqual(docker("run", "--rm", IMAGE, "sh", "-c", skript).stdout.decode().strip(), "ok")
+        # Negativtest: Der Laufzeitnutzer darf keine eigene Wurzel-CA einschleusen.
+        self.assertNotEqual(docker("run", "--rm", IMAGE, "sh", "-c",
+                                   'test -w "$SSL_CERT_FILE" || test -w /etc/ssl/certs').returncode, 0)
+
+    def test_python3_vorhanden_ohne_pip(self) -> None:
+        out = docker("run", "--rm", IMAGE, "python3", "-c", "import json, re, sys; print(sys.version_info[:2])")
+        self.assertEqual(out.stdout.decode().strip(), "(3, 11)")
+        # Negativtest: kein Paketmanager für Laufzeit-Nachinstallationen im Image.
+        self.assertNotEqual(docker("run", "--rm", IMAGE, "sh", "-c", "command -v pip3 || command -v pip").returncode,
+                            0)
+
     def test_nicht_root(self) -> None:
         self.assertEqual(docker("run", "--rm", IMAGE, "id", "-u").stdout.decode().strip(), "1000")
 

@@ -23,16 +23,17 @@ from typing import Any, Callable
 from . import prompts
 from .config import FAMILIEN, Konfig
 from .container import Aufruf, RunErgebnis, netz_fuer_rolle
+from .fortsetzung import Fortsetzung, neue_und_umbenannte, nummeriere_um
 from .eingabe import Anweisung, Fallordner, MountUnsicher, injektions_heuristik, kopiere_neutral, pruefe_mapping
 from .ergebnis import (
-    Entscheidungen, FristEintrag, baue_beratung, baue_entscheidungen, baue_vergleich_intern,
+    Entscheidungen, baue_beratung, baue_entscheidungen, baue_vergleich_intern,
     bereinige_markdown, einzeilig, entschaerfe_ueberschriften, ist_schreiben, markiere_ungepruefte,
     pruefe_pflichtabschnitte, schreibe_datei, strategie_leak, zaehle_woerter,
 )
 from .logging_setup import progress, sec_event
 from .register import Register, baue_register, register_markdown, zitat_gate
 from .rueckkanal import (
-    RolleFehlgeschlagen, lies_json, schema_bestaetigung, schema_coldread, schema_entwurf, schema_fristen,
+    RolleFehlgeschlagen, lies_json, schema_bestaetigung, schema_coldread, schema_entwurf,
     schema_groesse, schema_persona, schema_rechtsfragen, schema_register, schema_review,
     schema_sachverhalt, schema_ueberarbeitung, schema_vergleich,
 )
@@ -41,13 +42,13 @@ Runner = Callable[[Aufruf], RunErgebnis]
 
 EXIT_FINAL, EXIT_FEHLER, EXIT_EINGABE, EXIT_NICHT_FINAL, EXIT_STOPP = 0, 1, 2, 3, 4
 
+# Blindbestätigung bleibt blind: der Register-Bestätiger bekommt nie ein früheres Ergebnis.
+OHNE_GRUNDLAGE = ("registercheck",)
 _EINGABE_NAME_RE = re.compile(r"^[a-z0-9_]{1,40}\.(?:md|json)$")
 _DOK_RE = re.compile(r"^dok_\d{3}$")
-_NORM_RE = re.compile(r"(?:§§?|Art\.)\s*\d+")
 _EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+")
 _IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){3,7}(?:\s?[A-Z0-9]{1,4})?\b")
 _TELEFON_RE = re.compile(r"(?<![\w/.])(?:\+\d{1,3}[\s/\-]?|0)[1-9]\d{1,4}[\s/\-]?\d{3,}(?:[\s\-]?\d{2,})*(?![\w/])")
-MAX_RECHTSFRAGEN = 8 * 1024
 
 
 class Stopp(RuntimeError):
@@ -148,8 +149,16 @@ class Conductor:
 
     def __init__(self, *, konfig: Konfig, fall: Fallordner, anweisung: Anweisung, ergebnis_dir: Path,
                  arbeits_dir: Path, runner: Runner, lauf_id: str, heute: datetime.date | None = None,
-                 uhr: Callable[[], float] = time.monotonic, image_id: str = "") -> None:
+                 uhr: Callable[[], float] = time.monotonic, image_id: str = "",
+                 fortsetzung: Fortsetzung | None = None) -> None:
         self.k = konfig
+        self.fortsetzung = fortsetzung
+        self.wiederverwendet = 0
+        self.grundlagen = 0
+        self._aufruf_zaehler: dict[tuple[str, str, int], int] = {}
+        self.neue_doks: list[str] = []
+        self.umbenennung: dict[str, str] = {}
+        self.entfallen = 0
         self.image_id = image_id or "nicht aufgelöst (injizierter Runner)"
         self.fall = fall
         self.a = anweisung
@@ -222,7 +231,10 @@ class Conductor:
             self.aufrufe += 1
             nr = self.aufrufe
         basis = self.arbeit / f"{nr:03d}_{rolle}_{familie}"
-        in_dir, out_dir, home_dir = basis / "in", basis / "out", basis / "home"
+        in_dir, home_dir = basis / "in", basis / "home"
+        # Ausgabe bleibt nach dem Lauf erhalten (Entscheidung Timo 2026-11-16); Eingaben und
+        # Home (Credential-Kopie) bleiben im temporären Arbeitsverzeichnis.
+        out_dir = self.ergebnis / f"{nr:03d}_{rolle}_{familie}"
         for d in (basis, in_dir, out_dir, home_dir):
             d.mkdir(mode=0o700)
         for name, inhalt in eingaben.items():
@@ -230,22 +242,67 @@ class Conductor:
                 raise ValueError("unzulässiger Eingabename")
             schreibe_datei(in_dir / name, inhalt)
         pruefe_mapping(in_dir, self.k.mapping_namen)
+        # Der Fallordner ist live gemountet: Gate vor jedem Container erneut (Mapping, CLI-Konfig, Symlink).
+        fall_dir = self.fall.root if netz_fuer_rolle(rolle) == "api" else None
+        if fall_dir is not None:
+            pruefe_mapping(fall_dir, self.k.mapping_namen)
         vorher = _hashes(in_dir)
         modell = self.k.modell(rolle, familie)
+        schluessel = (rolle, familie, runde)
+        with self._lock:
+            index = self._aufruf_zaehler.get(schluessel, 0)
+            self._aufruf_zaehler[schluessel] = index + 1
+        wieder = None
+        grundlage_aus = ""
+        if self.fortsetzung is not None:
+            wieder = self.fortsetzung.suche(rolle=rolle, familie=familie, modell=modell, runde=runde,
+                                            eingaben=vorher, ausgabe=ausgabe)
+            if wieder is None and rolle not in OHNE_GRUNDLAGE:
+                alt = self.fortsetzung.grundlage(rolle=rolle, familie=familie, modell=modell, runde=runde,
+                                                 index=index, ausgabe=ausgabe)
+                if alt is not None:
+                    alt = nummeriere_um(alt, self.umbenennung)
+                    # Researcher hat offenes Web: seine Grundlage unterliegt derselben Minimierung (TM-AC-9).
+                    if rolle == "researcher" and self.pruefe_rechtsfragen(alt):
+                        sec_event("legal.resume.basis_rejected", "rejected", komponente="fortsetzung", rolle=rolle)
+                        alt = None
+                if alt is not None:
+                    datei = "vorher_" + ausgabe
+                    schreibe_datei(in_dir / datei, alt)
+                    prompt = prompt + prompts.fortsetzung_hinweis(datei, self.neue_doks, self.entfallen,
+                                                                  any(a != n for a, n in self.umbenennung.items()))
+                    grundlage_aus = self.fortsetzung.lauf_id
+                    with self._lock:
+                        self.grundlagen += 1
+                    sec_event("legal.resume.basis", "ok", komponente="fortsetzung", rolle=rolle, familie=familie,
+                              quelle=grundlage_aus)
+        pruef_hashes = _hashes(in_dir)   # inkl. Grundlage; `vorher` (ohne) ist der Schlüssel fürs Fortsetzen
         aufruf = Aufruf(
             rolle=rolle, familie=familie, netz=netz_fuer_rolle(rolle), in_dir=in_dir, out_dir=out_dir,
             home_dir=home_dir, prompt=prompt, name=f"legal-{self.lauf_id}-{rolle.replace('_', '-')}-{nr}",
             timeout=self.k.budget.timeout_s, modell=self.k.modell_argument(rolle, familie), lauf_id=self.lauf_id,
+            fall_dir=fall_dir,
         )
         start, t0 = _jetzt(), self.uhr()
-        sec_event("legal.container.start", "ok", komponente="container", rolle=rolle, familie=familie, modell=modell)
-        res = self.runner(aufruf)
-        dauer = round(self.uhr() - t0, 1)
-        sec_event("legal.container.done", "ok" if res.rc == 0 else "failed", komponente="container",
-                  rolle=rolle, familie=familie, modell=modell, rc=res.rc, dauer_s=dauer)
+        if wieder is not None:
+            # Gleiche Rolle, Familie, Modell, Runde und Eingaben: geprüfte Ausgabe des früheren Laufs
+            # übernehmen; sie läuft unten erneut durch die Rückkanal-Prüfung.
+            schreibe_datei(out_dir / ausgabe, wieder)
+            res = RunErgebnis(rc=0)
+            with self._lock:
+                self.wiederverwendet += 1
+            sec_event("legal.container.reused", "ok", komponente="fortsetzung", rolle=rolle, familie=familie,
+                      modell=modell, quelle=self.fortsetzung.lauf_id if self.fortsetzung else "")
+        else:
+            sec_event("legal.container.start", "ok", komponente="container", rolle=rolle, familie=familie,
+                      modell=modell)
+            res = self.runner(aufruf)
+            dauer = round(self.uhr() - t0, 1)
+            sec_event("legal.container.done", "ok" if res.rc == 0 else "failed", komponente="container",
+                      rolle=rolle, familie=familie, modell=modell, rc=res.rc, dauer_s=dauer)
         ausgabe_hash = ""
         try:
-            if _hashes(in_dir) != vorher:
+            if _hashes(in_dir) != pruef_hashes:
                 sec_event("legal.output.write_denied", "aborted", rolle=rolle, familie=familie)
                 raise RolleFehlgeschlagen("write_denied", rolle)
             if res.timed_out:
@@ -261,6 +318,9 @@ class Conductor:
                     image_id=self.image_id,
                     start=start, ende=_jetzt(), rc=res.rc, timed_out=res.timed_out,
                     eingaben_sha256=vorher, ausgabe_sha256=ausgabe_hash,
+                    **({"wiederverwendet_aus": self.fortsetzung.lauf_id}
+                       if wieder is not None and self.fortsetzung else {}),
+                    **({"grundlage_aus": grundlage_aus} if grundlage_aus else {}),
                 )
         for r in daten.get("rueckfragen", []) if isinstance(daten, dict) else []:
             self.rueckfragen.append(f"{rolle} ({familie}, {modell}): {r}")
@@ -297,7 +357,11 @@ class Conductor:
             self.e.status = "final" if code == EXIT_FINAL else "nicht final"
             self.e.rueckfragen = list(dict.fromkeys(self.rueckfragen))
             try:
-                self._md(f"## Abschluss\n\n- Status: {self.e.status} (Exit {code})\n- Modellaufrufe: {self.aufrufe}")
+                fort = (f"\n- Wiederverwendet aus Lauf {self.fortsetzung.lauf_id}: {self.wiederverwendet} von "
+                        f"{self.aufrufe}; neu gerechnet auf Grundlage des früheren Ergebnisses: {self.grundlagen}"
+                        if self.fortsetzung else "")
+                self._md(f"## Abschluss\n\n- Status: {self.e.status} (Exit {code})\n- Modellaufrufe: "
+                         f"{self.aufrufe - self.wiederverwendet}{fort}")
                 schreibe_datei(self.ergebnis / "entscheidungen.md",
                                baue_entscheidungen(self.e, self.k.research_domains))
             finally:
@@ -318,6 +382,8 @@ class Conductor:
             f"- Gesetzte Schlüsselzeilen (nur aus anweisung.md): {', '.join(a.gesetzte_schluessel) or 'keine'}\n"
             f"- Gewichte: " + ", ".join(f"{r} {w}" for r, w in self.k.gewichte.items())
             + f"\n- Image: {self.k.image} → {self.image_id}"
+            + (f"\n- Fortsetzung aus Lauf: {self.fortsetzung.lauf_id} ({len(self.fortsetzung)} wiederverwendbare "
+               "Ausgaben)" if self.fortsetzung else "")
         )
         if self.protokoll:
             self.protokoll.eintrag(typ="lauf", image=self.k.image, image_id=self.image_id,
@@ -330,6 +396,18 @@ class Conductor:
         akte.mkdir(mode=0o700)
         zuordnung = kopiere_neutral(self.fall.texte, akte)
         self.doks = {dok: (akte / f"{dok}.md").read_text(encoding="utf-8") for dok in zuordnung}
+        if self.fortsetzung is not None:
+            self.neue_doks, self.umbenennung, self.entfallen = neue_und_umbenannte(
+                self.fortsetzung.dok_hashes,
+                {dok: _sha256((akte / f"{dok}.md").read_bytes()) for dok in zuordnung})
+            self._md("## Fortsetzung: Akte gegenüber Lauf " + self.fortsetzung.lauf_id + "\n\n"
+                     + f"- Neu oder geändert: {', '.join(self.neue_doks) or 'keine'}\n"
+                     + f"- Entfallen oder geändert (Quelllauf): {self.entfallen}\n"
+                     + "- Umnummeriert: " + (", ".join(f"{a}→{n}" for a, n in sorted(self.umbenennung.items())
+                                                  if a != n) or "keine"))
+            if self.neue_doks or self.entfallen:
+                progress(f"Fortsetzung: {len(self.neue_doks)} neue/geänderte Unterlage(n) "
+                         f"({', '.join(self.neue_doks[:10])}), {self.entfallen} entfallen")
         self._md("## Zuordnung dok ↔ Datei (nur Host)\n\n" + "\n".join(
             f"- {dok} ← {einzeilig(str(self.fall.dateien[i - 1].relative_to(self.fall.root)), 200)}"
             for dok, i in zuordnung.items()))
@@ -425,12 +503,7 @@ class Conductor:
         for rolle in ("richter", "gegenanwalt"):
             self._uebernehme_einwaende(sieger, rolle, pruefer, bewertungen[(gewinner_f, rolle)], 0)
 
-        # 8. Fristen ×2 (beide Familien, unabhängig).
-        fr_eingaben = {**akte_eingaben, "anweisung.md": a.text, "sachverhalt.md": sachverhalt_md}
-        fr = dict(zip(FAMILIEN, self._parallel([
-            (lambda f=f: self._rolle("fristen", f, fr_eingaben, prompts.fristen(a, self.heute.isoformat()),
-                                     "fristen.json", schema_fristen)) for f in FAMILIEN])))
-        fristen, risiken = self.abgleich_fristen(fr)
+        # 8. Fristen: entfernt (Entscheidung Timo 2026-11-17); Fristen prüft Timo selbst.
 
         # 9. Stratege nur mit Auftrag aus anweisung.md (TM-AC-18, -24).
         vergleich = None
@@ -498,7 +571,7 @@ class Conductor:
             if limit_ok and not cr["befunde"] and not any(e.offen for e in sieger.einwaende):
                 break
 
-        return self._abschluss(sieger, fristen, risiken, vergleich, pruefer)
+        return self._abschluss(sieger, vergleich, pruefer)
 
     # ------------------------------------------------------------ Hilfsschritte
 
@@ -600,50 +673,18 @@ class Conductor:
         return "\n".join(z) + "\n"
 
     def pruefe_rechtsfragen(self, text: str) -> str | None:
-        """TM-AC-9: keine Pseudonym-Tokens, E-Mail, IBAN, Telefon; ≤ 8 KiB. Rückgabe: Verstoßkategorie."""
-        if len(text.encode("utf-8")) > MAX_RECHTSFRAGEN:
-            return "size"
+        """TM-AC-9: keine Pseudonym-Tokens, E-Mail, IBAN, Telefon. Rückgabe: Verstoßkategorie.
+
+        Die 8-KiB-Grenze ist aufgehoben (Entscheidung Timo 2026-11-17); die Größe begrenzt nur noch
+        `schema_rechtsfragen` (Anzahl und Länge der Fragen und Normen).
+        """
         for kategorie, rx in (("pseudonym", self.k.pseudonym_re), ("email", _EMAIL_RE), ("iban", _IBAN_RE),
                               ("telefon", _TELEFON_RE)):
             if rx.search(text):
                 return kategorie
         return None
 
-    def abgleich_fristen(self, fr: dict[str, dict]) -> tuple[list[FristEintrag], list[str]]:
-        """Fristen beider Familien zusammenführen; Abweichungen und früheste Frist für Timo (TM-AC-17)."""
-        nach_key: dict[tuple[str, str], FristEintrag] = {}
-        daten: dict[str, set[str]] = {f: set() for f in FAMILIEN}
-        for f in FAMILIEN:
-            for x in fr[f]["fristen"]:
-                q = x["quelle"].strip()
-                belegt = bool((_DOK_RE.fullmatch(q) and q in self.doks) or _NORM_RE.search(q))
-                key = (x["datum"], re.sub(r"\s+", " ", x["bezeichnung"]).strip().casefold())
-                daten[f].add(x["datum"])
-                if key in nach_key:
-                    alt = nach_key[key]
-                    nach_key[key] = FristEintrag(alt.datum, alt.bezeichnung, alt.quelle or q, alt.belegt or belegt,
-                                                 tuple(dict.fromkeys([*alt.familien, f])))
-                else:
-                    nach_key[key] = FristEintrag(x["datum"], x["bezeichnung"], q, belegt, (f,))
-        fristen = sorted(nach_key.values(), key=lambda e: (e.datum, e.bezeichnung))
-        for f in FAMILIEN:
-            for d in sorted(daten[f] - daten[andere(f)]):
-                bez = "; ".join(e.bezeichnung for e in fristen if e.datum == d and f in e.familien)
-                self.e.frist_abweichungen.append(f"{d}: nur von {f} ermittelt ({bez})")
-        self.e.frueheste_frist = fristen[0] if fristen else None
-        risiken = list(dict.fromkeys(f"{r['art']}: {r['text']}" for f in FAMILIEN for r in fr[f]["risiken"]))
-        herkunft = ", ".join(f"{f} {self.k.modell('fristen', f)}" for f in FAMILIEN)
-        self._md(f"## Fristen und Risiken (Rolle fristen: {herkunft})\n\n" + ("\n".join(
-            f"- {e.datum} {einzeilig(e.bezeichnung)} – Quelle {einzeilig(e.quelle) or '–'}"
-            f"{'' if e.belegt else ' [UNGEPRÜFT]'} (fristen: "
-            + ", ".join(f"{f} {self.k.modell('fristen', f)}" for f in e.familien) + ")"
-            for e in fristen) or "keine Frist erkennbar")
-            + ("\n\nAbweichungen:\n" + "\n".join(f"- {x}" for x in self.e.frist_abweichungen)
-               if self.e.frist_abweichungen else ""))
-        return fristen, risiken
-
-    def _abschluss(self, sieger: Entwurf, fristen: list[FristEintrag], risiken: list[str],
-                   vergleich: dict | None, pruefer: str) -> int:
+    def _abschluss(self, sieger: Entwurf, vergleich: dict | None, pruefer: str) -> int:
         """Abschluss-Gates: Zitat, Wortlimit, Pflichtabschnitte, offene Einwände, Strategie-Leak."""
         a = self.a
         gruende: list[str] = []
@@ -683,10 +724,10 @@ class Conductor:
         final = not gruende
 
         def _beratung(ist_final: bool) -> str:
-            # Gesamte Datei bereinigen: auch Anhang-Felder (Fristen, Risiken, Register) sind Modelltext.
+            # Gesamte Datei bereinigen: auch Anhang-Felder (Register) sind Modelltext.
             return bereinige_markdown(
-                baue_beratung(ergebnis_art=a.ergebnis, hauptteil=markiert, fristen=fristen, risiken=risiken,
-                              ungepruefte=ungepruefte, final=ist_final), self.k.research_domains)
+                baue_beratung(ergebnis_art=a.ergebnis, hauptteil=markiert, ungepruefte=ungepruefte,
+                              final=ist_final), self.k.research_domains)
 
         beratung = _beratung(final)
         fehlend = pruefe_pflichtabschnitte(beratung)

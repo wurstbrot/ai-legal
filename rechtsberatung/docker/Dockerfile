@@ -25,6 +25,28 @@ RUN npm ci --omit=dev \
 
 COPY egress-proxy.js /opt/legal/egress-proxy.js
 
+# python3 für Codex (Hilfsskripte beim Lesen der Akte; ohne python3 weicht Codex auf node aus).
+# Debian-Paket aus dem Bookworm-Archiv der Basis (apt prüft die Archivsignatur), Versionen exakt
+# gepinnt; ein Debian-Sicherheitsupdate lässt den Build scheitern -> Pin bewusst anheben.
+# Keine Recommends, Paketlisten im selben Layer entfernt.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       python3=3.11.2-1+b1 \
+       python3.11=3.11.2-6+deb12u9 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
+
+# System-CA-Bundle: Das slim-Image hat kein ca-certificates. Node bringt eigene Wurzeln mit,
+# die Codex-CLI (Rust-Binary) liest dagegen das System-Bundle; ohne es scheitert jede
+# TLS-Verbindung ("error sending request", Fehlerbild 2026-11-16). Statt eines zusätzlichen
+# apt-Pakets wird Nodes eingebauter Mozilla-Wurzelbestand exportiert: keine neue Abhängigkeit,
+# kein Netzabruf im Build. Root-eigen, nur lesbar (Laufzeitnutzer kann keine CA einschleusen).
+RUN mkdir -p /etc/ssl/certs \
+    && node -e "process.stdout.write(require('tls').rootCertificates.join('\n') + '\n')" \
+       > /etc/ssl/certs/ca-certificates.crt \
+    && grep -q 'BEGIN CERTIFICATE' /etc/ssl/certs/ca-certificates.crt \
+    && chmod 0444 /etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+
 # setuid/setgid-Bits entfernen (docker.md, TM-AC-25); ssh-Client und sudo dürfen nicht vorhanden sein.
 RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + \
     && ! command -v ssh \

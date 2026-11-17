@@ -20,7 +20,7 @@ FAMILIEN = ("claude", "codex")
 ROLLEN = (
     "sachverhalt", "rechtsfragen", "researcher", "registercheck", "anwalt", "review",
     "ueberarbeitung", "richter", "gegenanwalt", "persona_klaeger", "persona_beklagter",
-    "fristen", "stratege", "groesse", "coldread",
+    "stratege", "groesse", "coldread",
 )
 
 CLAUDE_MODEL_DEFAULT = "claude-fable-5-2"

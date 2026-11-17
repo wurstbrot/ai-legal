@@ -1,12 +1,15 @@
 """Gehärtete Rollen-Container, Egress-Netze und Docker-Runner (TM-AC-6, -7, -10, -20).
 
 Jeder Modellaufruf läuft in einem kurzlebigen Container. Eingaben sind `:ro`
-gemountet, genau ein leeres `/out` ist beschreibbar, das Home ist ein
-temporäres Verzeichnis je Container. Der Prompt geht ausschließlich über stdin.
+gemountet, genau ein leeres `/out` ist beschreibbar (liegt unter
+`<fallordner>/ergebnis/<lauf-id>/`), das Home ist ein temporäres Verzeichnis je
+Container. Rollen im API-Netz sehen zusätzlich den Fallordner nur lesbar unter
+`/fall` (Entscheidung Timo 2026-11-16); Recherche-Rollen nie. Der Prompt geht ausschließlich über stdin.
 Netzverkehr läuft nur über den Egress-Proxy des jeweiligen internen Netzes.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -17,7 +20,7 @@ import subprocess  # nosec B404
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import BinaryIO, Callable, Mapping, Sequence
 
 from .config import FAMILIEN
 from .logging_setup import progress, sec_event
@@ -31,6 +34,28 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.\-]{0,127}$")
 _CRED_MAX = 64 * 1024
 # Container-internes tmpfs, kein Host-Pfad (Bandit B108 ist hier ein Fehlalarm).
 CONTAINER_TMPFS = "/tmp:rw,noexec,nosuid,size=256m"  # nosec B108
+
+# Konto-Erweiterungen der CLIs abschalten: ChatGPT-Apps/Connectoren, Plugins, System-Skills und
+# Memories (Codex 0.167, `--disable` = `-c features.X=false`) bzw. claude.ai-Connectoren und
+# Auto-Memory (Claude Code). Sonst erreichen die Modelle über die erlaubten LLM-Domains die
+# Connectoren des Kontos (z. B. Mail/Drive). Der Egress-Proxy bleibt die zweite Linie.
+CODEX_AUS = (
+    "--disable", "apps", "--disable", "plugins", "--disable", "remote_plugin",
+    "--disable", "plugin_discovery_prefetch", "--disable", "tool_suggest",
+    "-c", "skills.bundled.enabled=false", "-c", "memories.use_memories=false",
+    "-c", "memories.generate_memories=false",
+)
+CLAUDE_ENV_AUS = (
+    "ENABLE_CLAUDEAI_MCP_SERVERS=false", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1",
+    "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1",
+)
+CLAUDE_SETTINGS = {"disableClaudeAiConnectors": True, "syncClaudeAiSkills": False,
+                   "syncClaudeAiPlugins": False, "autoMemoryEnabled": False}
+# Codex setzt stdout/stderr auf non-blocking, wenn sie Pipes sind, und bricht bei EAGAIN mit
+# einem Panic (rc=101) ab (openai/codex#55242, offen für 0.156–0.167). Im Container sind beide
+# Pipes zu Docker -> auf Datei bzw. /dev/null umleiten. Argumente gehen als "$@" (keine Shell-
+# Interpolation von Werten).
+CODEX_STDERR_DEBUG = "/home/node/codex-stderr.txt"
 
 # Docker-Container-Pfade; Quellen kommen nur aus Arbeitsverzeichnissen des Laufs.
 VERBOTENE_QUELLEN = (".ssh", "docker.sock", ".claude", ".claude.json", ".codex")
@@ -51,6 +76,7 @@ class Aufruf:
     timeout: int
     modell: str = ""
     lauf_id: str = ""
+    fall_dir: Path | None = None   # Fallordner, nur lesbar unter /fall; nie für Recherche-Rollen
 
 
 @dataclass(frozen=True)
@@ -93,7 +119,8 @@ def _pruefe_quelle(pfad: Path) -> str:
     return s
 
 
-def baue_docker_argv(aufruf: Aufruf, *, image: str, netz: Netz, env_namen: Sequence[str] = ()) -> list[str]:
+def baue_docker_argv(aufruf: Aufruf, *, image: str, netz: Netz, env_namen: Sequence[str] = (),
+                     debug: bool = False) -> list[str]:
     """Gehärteten `docker run`-Aufruf als list-argv bauen (ohne Prompt, ohne Secret-Werte)."""
     if aufruf.familie not in FAMILIEN:
         raise ValueError("unbekannte Modellfamilie")
@@ -125,12 +152,24 @@ def baue_docker_argv(aufruf: Aufruf, *, image: str, netz: Netz, env_namen: Seque
         "-e", "DISABLE_AUTOUPDATER=1",
         "-e", "HOME=/home/node",
     ]
+    if aufruf.familie == "claude":
+        for wert in CLAUDE_ENV_AUS:
+            argv += ["-e", wert]
     for n in env_namen:
         argv += ["-e", n]   # nur Name: der Wert kommt aus der Host-Umgebung, nie ins argv
+    if debug:
+        argv += ["-e", "RUST_BACKTRACE=1"]   # Codex-Panics mit Ort in stderr.txt (nur --debug)
     argv += [
         "-v", f"{_pruefe_quelle(aufruf.in_dir)}:/in:ro",
         "-v", f"{_pruefe_quelle(aufruf.out_dir)}:/out:rw",
         "-v", f"{_pruefe_quelle(aufruf.home_dir)}:/home/node:rw",
+    ]
+    if aufruf.fall_dir is not None:
+        # Offenes Web plus ganze Akte wäre ein Exfiltrationspfad (Prompt-Injection) -> nie kombinieren.
+        if aufruf.rolle in RECHERCHE_ROLLEN or aufruf.netz != "api":
+            raise ValueError("Recherche-Rollen erhalten den Fallordner nicht")
+        argv += ["-v", f"{_pruefe_quelle(aufruf.fall_dir)}:/fall:ro"]
+    argv += [
         "-w", "/out",
         image,
     ]
@@ -141,18 +180,34 @@ def baue_docker_argv(aufruf: Aufruf, *, image: str, netz: Netz, env_namen: Seque
         argv += [
             "claude", "-p", "--model", aufruf.modell,
             "--permission-mode", "acceptEdits",
+            "--strict-mcp-config",
             "--add-dir", "/in",
+            *(("--add-dir", "/fall") if aufruf.fall_dir is not None else ()),
             "--allowedTools", CLAUDE_TOOLS + ("," + CLAUDE_WEB_TOOLS if recherche else ""),
             "--disallowedTools", "Bash" + ("" if recherche else "," + CLAUDE_WEB_TOOLS),
         ]
     else:
         # Die Codex-eigene Sandbox funktioniert im gehärteten Container nicht; die
         # Isolation leisten Container, Mounts und Egress-Proxy (Design Notes).
-        argv += ["codex", "exec", "--skip-git-repo-check", "--sandbox", "danger-full-access", "-C", "/out"]
+        ziel = CODEX_STDERR_DEBUG if debug else "/dev/null"
+        argv += ["sh", "-c", f'exec "$@" >/dev/null 2>{ziel}', "sh",
+                 "codex", "exec", *CODEX_AUS, "--skip-git-repo-check", "--sandbox", "danger-full-access",
+                 "-C", "/out"]
         if aufruf.modell:
             argv += ["--model", aufruf.modell]
-        argv.append("-")   # Prompt von stdin
+        argv.append("-")   # Prompt von stdin (wird durch `exec` an codex vererbt)
     return argv
+
+
+def schreibe_cli_konfig(familie: str, home_dir: Path) -> None:
+    """Container-Home-Konfiguration, die Konto-Erweiterungen abschaltet (nur Claude; Codex per Flags)."""
+    if familie != "claude":
+        return
+    ziel = home_dir / ".claude" / "settings.json"
+    ziel.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(ziel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(CLAUDE_SETTINGS, fh)
 
 
 def _kopiere_credential(quelle: Path, ziel: Path) -> bool:
@@ -227,12 +282,29 @@ def kill_lauf(lauf_id: str, run: Callable[..., subprocess.CompletedProcess[bytes
 
 
 class DockerRunner:
-    """Führt einen `Aufruf` per `docker run` aus (subprocess ohne Shell, Prompt über stdin)."""
+    """Führt einen `Aufruf` per `docker run` aus (subprocess ohne Shell, Prompt über stdin).
+
+    `debug=True` (`legal.bash --debug`): stderr des Containers geht nach `stderr.txt` (0600) im
+    temporären Arbeitsverzeichnis der Rolle, nie ins Log oder in den Fallordner; dazu
+    `RUST_BACKTRACE=1`. Ohne Debug wird stderr verworfen.
+    """
+
+    @staticmethod
+    def _oeffne_debug(aufruf: Aufruf, name: str) -> tuple[BinaryIO, Path] | None:
+        """`stdout.txt`/`stderr.txt` exklusiv (kein Überschreiben, kein Symlink) mit 0600 anlegen; sonst None."""
+        ziel = aufruf.home_dir.parent / name
+        try:
+            fd = os.open(ziel, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        except OSError:
+            progress(f"Debug: {name} für {aufruf.rolle}/{aufruf.familie} nicht anlegbar – Ausgabe verworfen")
+            return None
+        return os.fdopen(fd, "wb"), ziel
 
     def __init__(self, *, image: str, netze: Mapping[str, Netz], env: Mapping[str, str] | None = None,
                  host_home: Path | None = None,
                  popen: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
-                 run: Callable[..., object] = _run) -> None:
+                 run: Callable[..., object] = _run, debug: bool = False) -> None:
+        self.debug = debug
         self.image = image
         self.netze = netze
         self.env = os.environ if env is None else env
@@ -241,13 +313,19 @@ class DockerRunner:
         self._run = run
 
     def __call__(self, aufruf: Aufruf) -> RunErgebnis:
+        schreibe_cli_konfig(aufruf.familie, aufruf.home_dir)
         env_namen, kopien = bereite_credentials_vor(aufruf.familie, aufruf.home_dir, self.env, self.host_home)
+        debug_dateien: list[tuple[BinaryIO, Path] | None] = [None, None]
         try:
-            argv = baue_docker_argv(aufruf, image=self.image, netz=self.netze[aufruf.netz], env_namen=env_namen)
+            argv = baue_docker_argv(aufruf, image=self.image, netz=self.netze[aufruf.netz], env_namen=env_namen,
+                                    debug=self.debug)
             argv[0] = _docker()
+            # `claude -p` meldet manche Fehler (z. B. Nutzungslimit) auf stdout, daher beide Kanäle.
+            if self.debug:
+                debug_dateien = [self._oeffne_debug(aufruf, "stdout.txt"), self._oeffne_debug(aufruf, "stderr.txt")]
+            aus, fehler = (d[0] if d else subprocess.DEVNULL for d in debug_dateien)
             try:
-                proc = self._popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL)
+                proc = self._popen(argv, stdin=subprocess.PIPE, stdout=aus, stderr=fehler)
             except OSError:
                 return RunErgebnis(rc=127)
             try:
@@ -262,8 +340,18 @@ class DockerRunner:
                 sec_event("legal.timeout.killed", "aborted", komponente="container", rolle=aufruf.rolle,
                           familie=aufruf.familie, timeout_s=aufruf.timeout)
                 return RunErgebnis(rc=124, timed_out=True)
-            return RunErgebnis(rc=int(proc.returncode or 0))
+            rc = int(proc.returncode or 0)
+            pfade = [str(d[1]) for d in debug_dateien if d]
+            if self.debug and rc != 0:
+                if aufruf.familie == "codex":
+                    pfade.append(str(aufruf.home_dir / "codex-stderr.txt"))
+                # Nur Pfade (temporäres Arbeitsverzeichnis), nie Inhalte (TM-AC-21).
+                progress(f"Debug: Ausgaben von {aufruf.rolle}/{aufruf.familie} (rc={rc}): " + ", ".join(pfade))
+            return RunErgebnis(rc=rc)
         finally:
+            for d in debug_dateien:
+                if d:
+                    d[0].close()
             for k in kopien:
                 try:
                     k.unlink()

@@ -5,7 +5,7 @@
   "description": "Gepinnte CLIs für das Image legal:1 (Claude Code, Codex). Nur per npm ci aus package-lock.json installieren.",
   "license": "UNLICENSED",
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.319",
+    "@anthropic-ai/claude-code": "2.1.325",
     "@openai/codex": "0.167.0"
   }
 }

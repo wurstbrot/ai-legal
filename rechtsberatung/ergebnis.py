@@ -18,10 +18,7 @@ from .logging_setup import sec_event, terminal_sicher
 
 KOPFZEILE = "KI-Entwurf, keine Rechtsberatung; Prüfung, Entscheidung und Versand durch Timo"
 ANHANG = "## Anhang (intern)"
-FRISTEN_UEBERSCHRIFT = "### Fristen und Risiken"
 UNGEPRUEFT_UEBERSCHRIFT = "### Ungeprüfte Fundstellen"
-FRISTEN_TABELLENKOPF = "| Datum | Frist | Quelle |"
-KEINE_FRIST = "keine Frist erkennbar"
 MARKER_UNGEPRUEFT = "[UNGEPRÜFT]"
 VERGLEICH_KOPF = "intern – nicht an Gegenseite"
 
@@ -127,8 +124,8 @@ def bereinige_markdown(text: str, domains: tuple[str, ...], *, komponente: str =
 
 
 def entschaerfe_ueberschriften(hauptteil: str) -> str:
-    """Hauptteil darf keine Host-Abschnitte vortäuschen (Anhang, Fristen, Ungeprüft)."""
-    geschuetzt = {ANHANG.casefold(), FRISTEN_UEBERSCHRIFT.casefold(), UNGEPRUEFT_UEBERSCHRIFT.casefold()}
+    """Hauptteil darf keine Host-Abschnitte vortäuschen (Anhang, Ungeprüft)."""
+    geschuetzt = {ANHANG.casefold(), UNGEPRUEFT_UEBERSCHRIFT.casefold()}
     zeilen = []
     for z in hauptteil.splitlines():
         if re.sub(r"\s+", " ", z.strip()).casefold() in geschuetzt or z.strip() == KOPFZEILE:
@@ -144,17 +141,6 @@ def einzeilig(s: str, max_len: int = 1000) -> str:
 
 
 # ---------------------------------------------------------------- beratung.md
-
-@dataclass
-class FristEintrag:
-    """Frist im Ergebnis; `familien` nennt die Modellfamilien, die sie gefunden haben."""
-
-    datum: str
-    bezeichnung: str
-    quelle: str
-    belegt: bool
-    familien: tuple[str, ...] = ()
-
 
 def markiere_ungepruefte(hauptteil: str, zitate: Iterable[str]) -> str:
     """Jedes Vorkommen eines ungeprüften Zitats im Hauptteil mit `[UNGEPRÜFT]` markieren.
@@ -172,34 +158,13 @@ def markiere_ungepruefte(hauptteil: str, zitate: Iterable[str]) -> str:
     return s
 
 
-def fristen_abschnitt(fristen: list[FristEintrag], risiken: list[str]) -> str:
-    zeilen = [FRISTEN_UEBERSCHRIFT, ""]
-    if fristen:
-        zeilen += [FRISTEN_TABELLENKOPF, "|---|---|---|"]
-        for f in fristen:
-            quelle = f.quelle or "–"
-            marker = "" if f.belegt else " " + MARKER_UNGEPRUEFT
-            zeilen.append(f"| {f.datum} | {_zelle(f.bezeichnung)}{marker} | {_zelle(quelle)} |")
-    else:
-        zeilen.append(KEINE_FRIST)
-    if risiken:
-        zeilen += ["", "Risiken:"]
-        zeilen += [f"- {einzeilig(r)}" for r in risiken]
-    return "\n".join(zeilen)
-
-
-def _zelle(s: str) -> str:
-    return einzeilig(s, 300).replace("|", "\\|")
-
-
-def baue_beratung(*, ergebnis_art: str, hauptteil: str, fristen: list[FristEintrag], risiken: list[str],
-                  ungepruefte: list[str], final: bool) -> str:
+def baue_beratung(*, ergebnis_art: str, hauptteil: str, ungepruefte: list[str], final: bool) -> str:
     """`beratung.md`: Kopfzeile, Ergebnis-Art, Hauptteil (Modelltext), Host-Anhang."""
     teile = [KOPFZEILE, ""]
     if not final:
         teile += ["**Status: NICHT FINAL – offene Punkte siehe entscheidungen.md**", ""]
     teile += [f"# {einzeilig(ergebnis_art, 80)}", "", hauptteil.strip(), "", ANHANG, "",
-              fristen_abschnitt(fristen, risiken), "", UNGEPRUEFT_UEBERSCHRIFT, ""]
+              UNGEPRUEFT_UEBERSCHRIFT, ""]
     teile += [f"- {einzeilig(u)}" for u in ungepruefte] if ungepruefte else ["keine"]
     return "\n".join(teile) + "\n"
 
@@ -224,13 +189,6 @@ def pruefe_pflichtabschnitte(beratung: str) -> list[str]:
     if ANHANG not in zeilen:
         fehlend.append("Anhang (intern)")
     anhang = zeilen[zeilen.index(ANHANG):] if ANHANG in zeilen else []
-    if FRISTEN_UEBERSCHRIFT not in anhang:
-        fehlend.append("Fristen und Risiken")
-    else:
-        abschnitt = anhang[anhang.index(FRISTEN_UEBERSCHRIFT) + 1:]
-        abschnitt = abschnitt[:next((i for i, z in enumerate(abschnitt) if z.startswith("#")), len(abschnitt))]
-        if FRISTEN_TABELLENKOPF not in abschnitt and KEINE_FRIST not in abschnitt:
-            fehlend.append("Fristen-Tabelle oder Vermerk")
     if UNGEPRUEFT_UEBERSCHRIFT not in anhang:
         fehlend.append("Ungeprüfte Fundstellen")
     return fehlend
@@ -293,8 +251,6 @@ class Entscheidungen:
 
     status: str = "nicht final"
     gruende_nicht_final: list[str] = field(default_factory=list)
-    frueheste_frist: FristEintrag | None = None
-    frist_abweichungen: list[str] = field(default_factory=list)
     rueckfragen: list[str] = field(default_factory=list)
     luecken: list[str] = field(default_factory=list)
     abgelehnte_einwaende: list[str] = field(default_factory=list)
@@ -309,7 +265,8 @@ FESTE_PUNKTE = (
     "in der Akte vor dem Lauf geprüft?",
     "E-6: Festplattenverschlüsselung aktiv und Fallordner nicht in einem Cloud-Sync-Ordner?",
     "Versand oder Einreichung erfolgt nur durch Timo; `legal` versendet nichts.",
-    "Fristen eigenständig prüfen; bei Fristen und Schriftsätzen anwaltliche Prüfung empfohlen.",
+    "Fristen ermittelt `legal` nicht: alle Fristen eigenständig prüfen; bei Fristen und Schriftsätzen "
+    "anwaltliche Prüfung empfohlen.",
 )
 
 
@@ -319,22 +276,13 @@ def _ohne_haken(s: str) -> str:
 
 
 def baue_entscheidungen(e: Entscheidungen, domains: tuple[str, ...]) -> str:
-    """`entscheidungen.md`: früheste Frist zuoberst, danach alle offenen Punkte für Timo."""
+    """`entscheidungen.md`: Status zuoberst, danach alle offenen Punkte für Timo."""
     def punkte(titel: str, items: list[str], leer: str = "keine") -> list[str]:
         out = [f"## {titel}", ""]
         out += [f"- [ ] {_ohne_haken(i)}" for i in items] if items else [leer]
         return out + [""]
 
     z = ["# Entscheidungen – nur Timo entscheidet", "", KOPFZEILE, ""]
-    z += ["## Früheste Frist", ""]
-    if e.frueheste_frist:
-        f = e.frueheste_frist
-        z.append(f"- [ ] **{f.datum}** – {einzeilig(f.bezeichnung)} (Quelle: {einzeilig(f.quelle) or '–'}"
-                 f"{'' if f.belegt else ', ' + MARKER_UNGEPRUEFT})")
-    else:
-        z.append(f"- [ ] {KEINE_FRIST} – bitte selbst prüfen")
-    z.append("")
-    z += punkte("Frist-Abweichungen zwischen den Modellen", e.frist_abweichungen)
     z += [f"## Status des Laufs: {e.status}", ""]
     z += [f"- [ ] {_ohne_haken(g)}" for g in e.gruende_nicht_final] or ["keine offenen Gates"]
     z.append("")

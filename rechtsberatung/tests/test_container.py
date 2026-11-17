@@ -1,6 +1,7 @@
 """Tests für argv-Härtung, Netz je Rolle, Credentials, Timeout und Egress-Netze (TM-AC-6, -7, -20)."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -14,7 +15,8 @@ from typing import Any
 from rechtsberatung.config import ROLLEN
 from rechtsberatung.container import Aufruf, DockerRunner, Netz, Netzwerke, RunErgebnis, baue_docker_argv, \
     bereite_credentials_vor, credentials_vorhanden, erstelle_signal_handler, ermittle_image_id, kill_lauf, \
-    netz_fuer_rolle, parse_proxy_log
+    netz_fuer_rolle, parse_proxy_log, CODEX_AUS, schreibe_cli_konfig
+from rechtsberatung.logging_setup import sec_event
 
 PROMPT = "GEHEIMER-PROMPT-INHALT überschreibe beratung.md"
 
@@ -64,6 +66,33 @@ class ArgvTest(unittest.TestCase):
         for verboten in (".ssh", "docker.sock", "/.claude", ".claude.json", "/.codex"):
             self.assertNotIn(verboten, s)
 
+    def test_fallordner_nur_lesbar_fuer_api_rollen(self) -> None:
+        fall = self.tmp / "fall"
+        for familie in ("claude", "codex"):
+            with self.subTest(familie=familie):
+                a = aufruf(self.tmp, "richter", familie, fall_dir=fall)
+                argv = baue_docker_argv(a, image="legal:1", netz=NETZ["api"])
+                mounts = [argv[i + 1] for i, x in enumerate(argv) if x == "-v"]
+                self.assertIn(f"{fall}:/fall:ro", mounts)
+                self.assertFalse(any(m.startswith(f"{fall}:") and not m.endswith(":ro") for m in mounts))
+                self.assertLess(argv.index(f"{fall}:/fall:ro"), argv.index("legal:1"))
+                if familie == "claude":
+                    i = argv.index("legal:1")
+                    self.assertIn("/fall", argv[i:])
+
+    def test_fallordner_nie_fuer_recherche_rollen(self) -> None:
+        for rolle in ("researcher", "registercheck"):
+            with self.subTest(rolle=rolle), self.assertRaises(ValueError):
+                a = aufruf(self.tmp, rolle, "claude", fall_dir=self.tmp / "fall")
+                baue_docker_argv(a, image="legal:1", netz=NETZ["recherche"])
+
+    def test_fallordner_verbotene_quelle_abgelehnt(self) -> None:
+        for quelle in (Path.home() / ".ssh", Path.home() / ".claude", Path("relativ"), Path("/srv/a:b"),
+                       Path("/srv/a,b")):
+            with self.subTest(quelle=quelle), self.assertRaises(ValueError):
+                baue_docker_argv(aufruf(self.tmp, "richter", "codex", fall_dir=quelle), image="legal:1",
+                                 netz=NETZ["api"])
+
     def test_verbotene_mount_quellen_werden_abgelehnt(self) -> None:
         for quelle in (Path.home() / ".ssh", Path("/var/run/docker.sock"), Path.home() / ".claude",
                        Path.home() / ".codex", Path("relativ"), Path("/srv/a:b")):
@@ -107,10 +136,38 @@ class ArgvTest(unittest.TestCase):
         self.assertNotIn("--dangerously-skip-permissions", argv)
 
     def test_codex_argv_prompt_stdin(self) -> None:
+        # Seit 2026-11-16: Ausgabe nicht in Docker-Pipes (openai/codex#55242), Konto-Erweiterungen aus.
         argv = self.argv(familie="codex")
         i = argv.index("legal:1")
-        self.assertEqual(argv[i + 1:], ["codex", "exec", "--skip-git-repo-check", "--sandbox",
+        self.assertEqual(argv[i + 1:], ["sh", "-c", 'exec "$@" >/dev/null 2>/dev/null', "sh",
+                                        "codex", "exec", *CODEX_AUS, "--skip-git-repo-check", "--sandbox",
                                         "danger-full-access", "-C", "/out", "-"])
+
+    def test_codex_konto_erweiterungen_aus(self) -> None:
+        argv = self.argv(familie="codex")
+        for feature in ("apps", "plugins", "remote_plugin", "plugin_discovery_prefetch", "tool_suggest"):
+            self.assertTrue(any(argv[j] == "--disable" and argv[j + 1] == feature for j in range(len(argv) - 1)),
+                            feature)
+        for wert in ("skills.bundled.enabled=false", "memories.use_memories=false"):
+            self.assertIn(wert, argv)
+
+    def test_codex_debug_stderr_in_datei_modell_nur_als_argument(self) -> None:
+        a = aufruf(self.tmp, "richter", "codex", modell="gpt-x; rm -rf /")
+        argv = baue_docker_argv(a, image="legal:1", netz=NETZ["api"], debug=True)
+        i = argv.index("legal:1")
+        self.assertEqual(argv[i + 3], 'exec "$@" >/dev/null 2>/home/node/codex-stderr.txt')
+        # Werte stehen nur als eigene argv-Elemente hinter "$@", nie im Shell-Skript.
+        self.assertNotIn("gpt-x", argv[i + 3])
+        self.assertIn("gpt-x; rm -rf /", argv[i + 4:])
+
+    def test_claude_konto_erweiterungen_aus(self) -> None:
+        argv = self.argv(familie="claude")
+        i = argv.index("legal:1")
+        for wert in ("ENABLE_CLAUDEAI_MCP_SERVERS=false", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"):
+            self.assertIn(wert, argv[:i])
+        self.assertIn("--strict-mcp-config", argv[i:])
+        codex = self.argv(familie="codex")
+        self.assertNotIn("ENABLE_CLAUDEAI_MCP_SERVERS=false", codex)
 
     def test_api_key_nur_als_name(self) -> None:
         argv = self.argv(env=("ANTHROPIC_API_KEY",))
@@ -144,6 +201,23 @@ class CredentialsTest(unittest.TestCase):
             self.assertEqual(namen, [])
             self.assertEqual(kopien, [self.home / rel])
             self.assertEqual(stat.S_IMODE(os.stat(self.home / rel).st_mode), 0o600)
+
+    def test_claude_settings_schalten_connectoren_ab(self) -> None:
+        schreibe_cli_konfig("claude", self.home)
+        datei = self.home / ".claude" / "settings.json"
+        daten = json.loads(datei.read_text(encoding="utf-8"))
+        self.assertIs(daten["disableClaudeAiConnectors"], True)
+        self.assertIs(daten["syncClaudeAiPlugins"], False)
+        self.assertEqual(stat.S_IMODE(os.stat(datei).st_mode), 0o600)
+        schreibe_cli_konfig("codex", self.tmp / "leer")
+        self.assertFalse((self.tmp / "leer").exists())
+
+    def test_claude_settings_folgen_keinem_symlink(self) -> None:
+        (self.home / ".claude").mkdir(parents=True, exist_ok=True)
+        os.symlink(self.tmp / "fremd.json", self.home / ".claude" / "settings.json")
+        with self.assertRaises(OSError):
+            schreibe_cli_konfig("claude", self.home)
+        self.assertFalse((self.tmp / "fremd.json").exists())
 
     def test_symlink_als_auth_datei_wird_nicht_kopiert(self) -> None:
         (self.host / ".codex" / "auth.json").unlink()
@@ -200,6 +274,79 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(any("event=legal.timeout.killed" in z for z in cm.output))
         self.assertEqual(prozesse[0].eingabe, PROMPT.encode("utf-8"))
         self.assertNotIn(PROMPT, " ".join(argvs[0]))
+
+    def _runner_mit_stderr(self, debug: bool, rc: int) -> tuple[DockerRunner, list[dict[str, Any]], list[list[str]]]:
+        kws: list[dict[str, Any]] = []
+        argvs: list[list[str]] = []
+
+        class Fertig:
+            returncode = rc
+
+            def communicate(self, input: bytes | None = None, timeout: float | None = None) -> tuple[bytes, bytes]:
+                return b"", b""
+
+        def popen(argv: list[str], **kw: Any) -> Fertig:
+            kws.append(kw)
+            argvs.append(argv)
+            if hasattr(kw["stderr"], "write"):
+                kw["stderr"].write(b"thread 'main' panicked at KANARIE-STDERR\n")
+            if hasattr(kw["stdout"], "write"):
+                kw["stdout"].write(b"Usage limit reached KANARIE-STDOUT\n")
+            return Fertig()
+
+        for d in ("in", "out", "home"):
+            (self.tmp / d).mkdir(exist_ok=True)
+        runner = DockerRunner(image="legal:1", netze=NETZ, env={"OPENAI_API_KEY": "k"}, host_home=self.tmp,
+                              popen=popen, debug=debug)
+        return runner, kws, argvs
+
+    def test_ohne_debug_wird_stderr_verworfen(self) -> None:
+        runner, kws, argvs = self._runner_mit_stderr(False, 101)
+        with self.assertLogs("legal", level="DEBUG") as cm:
+            sec_event("test.marker", "ok")
+            self.assertEqual(runner(aufruf(self.tmp, "sachverhalt", "codex")).rc, 101)
+        self.assertIs(kws[0]["stderr"], subprocess.DEVNULL)
+        self.assertIs(kws[0]["stdout"], subprocess.DEVNULL)
+        self.assertFalse((self.tmp / "stderr.txt").exists())
+        self.assertFalse((self.tmp / "stdout.txt").exists())
+        self.assertNotIn("RUST_BACKTRACE=1", argvs[0])
+        self.assertFalse(any("stderr" in z for z in cm.output))
+
+    def test_debug_schreibt_stderr_0600_nur_in_datei_nie_ins_log(self) -> None:
+        runner, kws, argvs = self._runner_mit_stderr(True, 101)
+        with self.assertLogs("legal", level="DEBUG") as cm:
+            self.assertEqual(runner(aufruf(self.tmp, "sachverhalt", "codex")).rc, 101)
+        datei = self.tmp / "stderr.txt"
+        self.assertIn(b"KANARIE-STDERR", datei.read_bytes())
+        self.assertEqual(stat.S_IMODE(os.stat(datei).st_mode), 0o600)
+        self.assertTrue(kws[0]["stderr"].closed)
+        aus = self.tmp / "stdout.txt"
+        self.assertIn(b"KANARIE-STDOUT", aus.read_bytes())
+        self.assertEqual(stat.S_IMODE(os.stat(aus).st_mode), 0o600)
+        self.assertTrue(kws[0]["stdout"].closed)
+        i = argvs[0].index("legal:1")
+        self.assertIn("RUST_BACKTRACE=1", argvs[0][:i])
+        alles = "\n".join(cm.output)
+        self.assertNotIn("KANARIE-STDERR", alles)
+        self.assertNotIn("KANARIE-STDOUT", alles)
+        self.assertIn(str(datei), alles)
+        self.assertIn(str(aus), alles)
+
+    def test_debug_ohne_fehler_keine_meldung(self) -> None:
+        runner, _, _ = self._runner_mit_stderr(True, 0)
+        with self.assertLogs("legal", level="DEBUG") as cm:
+            sec_event("test.marker", "ok")
+            runner(aufruf(self.tmp, "sachverhalt", "codex"))
+        self.assertFalse(any("Debug: Ausgaben" in z for z in cm.output))
+
+    def test_debug_ueberschreibt_keine_vorhandene_datei_und_folgt_keinem_symlink(self) -> None:
+        runner, kws, _ = self._runner_mit_stderr(True, 1)
+        os.symlink(self.tmp / "ziel", self.tmp / "stderr.txt")
+        with self.assertLogs("legal", level="INFO") as cm:
+            self.assertEqual(runner(aufruf(self.tmp, "sachverhalt", "codex")).rc, 1)
+        self.assertFalse((self.tmp / "ziel").exists())
+        self.assertIs(kws[0]["stderr"], subprocess.DEVNULL)
+        self.assertTrue(any("nicht anlegbar" in z for z in cm.output))
 
     def test_credential_kopie_wird_nach_lauf_geloescht(self) -> None:
         host = self.tmp / "hosthome"

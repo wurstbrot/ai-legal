@@ -16,7 +16,7 @@ Maßgeblich: `docs/specs/spec-ki-rechtsberatung/SPEC.md`, Threat Model
 ## Aufruf
 
 ```bash
-cd <fallordner> && /pfad/zu/rechtsberatung/legal.bash [--keep]
+cd <fallordner> && /pfad/zu/rechtsberatung/legal.bash [--keep] [--debug] [--fortsetzen [LAUF_ID]]
 # oder, Pfad optional:
 rechtsberatung/legal.bash /pfad/zum/fallordner [--keep]
 ```
@@ -73,14 +73,53 @@ Ungültige oder doppelte Schlüsselzeilen → Exit 2.
 
 | Datei | Inhalt |
 |---|---|
-| `beratung.md` | Kopfzeile „KI-Entwurf …“, `# <Ergebnis-Art>`, Hauptteil, `## Anhang (intern)` mit Fristen-Tabelle (oder „keine Frist erkennbar“) und ungeprüften Fundstellen; bei nicht finalem Lauf zusätzlich „NICHT FINAL“ |
-| `entscheidungen.md` | Früheste Frist zuoberst, Frist-Abweichungen, Status/Gates, Rückfragen, Lücken, offene/abgelehnte Einwände, ungeprüfte Fundstellen, Widersprüche, Injektions-Hinweise, feste Punkte (E-5, E-6). Nur Timo hakt ab. |
+| `beratung.md` | Kopfzeile „KI-Entwurf …“, `# <Ergebnis-Art>`, Hauptteil, `## Anhang (intern)` mit ungeprüften Fundstellen (keine Fristen, seit 2026-11-17); bei nicht finalem Lauf zusätzlich „NICHT FINAL“ |
+| `entscheidungen.md` | Status/Gates zuoberst, Rückfragen, Lücken, offene/abgelehnte Einwände, ungeprüfte Fundstellen, Widersprüche, Injektions-Hinweise, feste Punkte (E-5, E-6). Nur Timo hakt ab. |
 | `register.md` | Rechtsprechungs-Register; Status `geprüft\|ungeprüft\|hält nicht` setzt nur der Host |
 | `protokoll.md` / `protokoll.jsonl` | Append-only: alle Beiträge, Einwände, Antworten, Noten, Gewichte, gewählte Fassung; je Container Lauf-ID, Runde, Rolle, Familie, Modell, Start/Ende, rc, SHA-256 von Ein- und Ausgabe; Zuordnung `dok_nnn ↔ Datei` |
 | `vergleich_intern.md` | nur bei `Vergleich: ja`; Kopf „intern – nicht an Gegenseite“ |
 
 Arbeitsverzeichnisse (`tempfile`, 0700) werden nach dem Lauf gelöscht; `--keep` behält
 sie (E-9). Ergebnisse bleiben, bis Timo sie löscht.
+
+**Mounts je Container (seit 2026-11-16):** `/in` (nur lesbar, neutrale Kopien `dok_nnn.md`),
+`/fall` = Fallordner nur lesbar (nur Rollen im API-Netz, nie Researcher/Register-Bestätiger),
+`/out` = `<fallordner>/ergebnis/<lauf-id>/NNN_rolle_familie/` (beschreibbar, bleibt nach dem Lauf
+erhalten) und `/home/node` (temporär, Credential-Kopie). Vor jedem API-Container prüft das
+Mount-Gate den ganzen Fallordner erneut; `CLAUDE.md`, `AGENTS.md`, `.claude`, `.codex`,
+`.mcp.json`, `.git`, eine Mapping-Datei oder ein Symlink im Fallordner brechen mit Exit 2 ab.
+
+## Fortsetzen (`--fortsetzen [LAUF_ID]`)
+
+Ohne Lauf-ID wird der letzte Lauf unter `ergebnis/` verwendet. Eine Rolle wird nicht neu
+gerechnet, wenn Rolle, Familie, Modell, Runde und die SHA-256-Werte **aller** Eingabedateien mit
+einem erfolgreichen Container des Quelllaufs übereinstimmen (`protokoll.jsonl`) und die Datei in
+`ergebnis/<lauf>/NNN_rolle_familie/` genau den damals protokollierten Hash hat. Die übernommene
+Ausgabe läuft erneut durch die aktuelle Rückkanal-Prüfung. Jede Änderung an Akte oder
+`anweisung.md` lässt die betroffenen Rollen (bei `anweisung.md`: praktisch alle) neu laufen;
+Prompt-Änderungen allein nicht. **Läuft eine Rolle neu, baut sie auf ihrem früheren Ergebnis
+auf:** es liegt als `/in/vorher_<ausgabe>.json` bei, der Prompt nennt die neuen bzw. geänderten
+Akten-Dokumente (Abgleich über Inhalts-Hashes) und verlangt eine aktualisierte Gesamtausgabe.
+dok-Verweise im früheren Ergebnis schreibt der Host auf die neue Nummerierung um (entfallene →
+`dok_entfallen`). Ausnahme: der Register-Bestätiger bleibt blind (keine Grundlage); die Grundlage
+des Researchers durchläuft die Minimierungsprüfung (TM-AC-9). Protokoll: `grundlage_aus`,
+`[SEC] legal.resume.basis`. Protokoll: `wiederverwendet_aus`, `[SEC] legal.container.reused`;
+abweichender Hash → `legal.resume.mismatch`, ungültige Quelle → Exit 2 `legal.resume.rejected`.
+
+## Fehlersuche (`--debug`)
+
+`legal.bash --debug` schreibt stdout und stderr jedes Containers nach
+`/tmp/legal-…/NNN_rolle_familie/stdout.txt` bzw. `stderr.txt` (0600; `claude -p` meldet z. B.
+Limits auf stdout), bei Codex zusätzlich
+`…/home/codex-stderr.txt`, setzt `RUST_BACKTRACE=1` und behält das Arbeitsverzeichnis. Bei
+rc≠0 nennt das Terminal nur den Pfad, nie den Inhalt (TM-AC-21). Die Dateien können
+pseudonymisierten Akteninhalt enthalten; nach der Fehlersuche löschen. Codex-Logs eines
+behaltenen Laufs liest `python3 -I rechtsberatung/diagnose_codex.py <…/home/.codex> [--details]`.
+
+**Konto-Erweiterungen sind abgeschaltet:** Codex läuft mit `--disable apps|plugins|remote_plugin|
+plugin_discovery_prefetch|tool_suggest`, ohne System-Skills und Memories; Claude mit
+`--strict-mcp-config`, `ENABLE_CLAUDEAI_MCP_SERVERS=false` und `disableClaudeAiConnectors` im
+Container-Home. Codex-Ausgaben gehen nicht in Docker-Pipes (Panic rc=101, openai/codex#55242).
 
 ## Exit-Codes
 
@@ -98,7 +137,7 @@ Sachverhalt ×2 (Abgleich, Quellen-Gate) → Rechtsfragen (Claude; Minimierungsp
 sonst kein Researcher) → Researcher (Claude, Recherche-Netz) → Register-Bestätiger
 (Codex, Blindbestätigung: erhält nur ID und URL und liest Gericht/Az./Datum selbst aus) → Mandanten-Anwalt ×2 → Cross-Review (`LEGAL_REVIEW_RUNDEN`)
 → Richter + Gegenanwalt bewerten beide Entwürfe (jeweils andere Familie) → gewichtete
-Gesamtnote, Gleichstand → Claude → Fristen ×2 → Stratege (nur `Vergleich: ja`) →
+Gesamtnote, Gleichstand → Claude → Stratege (nur `Vergleich: ja`) →
 Schleife bis `LEGAL_MAX_RUNDEN`: Personas (nur `Personas: an`) → Überarbeitung → Größen-Prüfer
 → Cold-Read (nur Endfassung, Akte, Register) → Abschluss-Gates.
 
@@ -122,7 +161,7 @@ nur erwartete Namen, ohne Symlinks/Hardlinks, ≤ 1 MiB.
 | `LEGAL_LOG_LEVEL` | `INFO` |
 
 Rollen: `sachverhalt, rechtsfragen, researcher, registercheck, anwalt, review, ueberarbeitung,
-richter, gegenanwalt, persona_klaeger, persona_beklagter, fristen, stratege, groesse, coldread`.
+richter, gegenanwalt, persona_klaeger, persona_beklagter, stratege, groesse, coldread`.
 Modell-IDs müssen `^[a-z0-9][a-z0-9.\-]{1,63}$` erfüllen; jeder Override loggt
 `[SEC] event=legal.model.override`. Ungültige Werte → Exit 2.
 
@@ -133,7 +172,11 @@ docker build -t legal:1 rechtsberatung/docker
 ```
 
 Basis per Digest, CLIs per `npm ci` aus `package-lock.json` (Version und Integrity),
-setuid/setgid-Bits entfernt, kein ssh/sudo, `USER node` (UID 1000). Der Egress-Proxy
+setuid/setgid-Bits entfernt, kein ssh/sudo, `USER node` (UID 1000). Das System-CA-Bundle
+`/etc/ssl/certs/ca-certificates.crt` (`SSL_CERT_FILE`) wird beim Build aus Nodes eingebauten
+Mozilla-Wurzeln erzeugt (root-eigen, 0444); die Codex-CLI braucht es für TLS, das slim-Image
+bringt kein `ca-certificates` mit. Nach Änderungen am Dockerfile das Image neu bauen; die neue
+Image-ID steht im Protokoll jedes Laufs. Der Egress-Proxy
 (`egress-proxy.js`, nur Node-Standardbibliothek) läuft aus demselben Image.
 
 Laufzeit: `LEGAL_IMAGE` wird zu Laufbeginn per `docker image inspect` auf die unveränderliche
@@ -188,9 +231,11 @@ Unit-Tests rufen Docker nie auf (injizierter `FakeRunner`). Die Docker-Integrati
 
 | Komponente | Version | Ergebnis |
 |---|---|---|
-| Basis `node:22.23.4-bookworm-slim` | `@sha256:5ec23b7c…3d96d` | Docker Official Image; Tag ≥ 7 Tage alt; läuft als `node` (UID 1000); setuid/setgid-Bits werden im Build entfernt |
-| `@anthropic-ai/claude-code` | 2.1.319 (2026-11-06) | OSV: keine Funde (geprüft 2026-11-16); neuere 2.1.325 (2026-11-13) ist < 7 Tage alt; Scorecard: kein Projekt (Repo ohne Quellcode) → erweiterte Prüfung: Publisher Anthropic, offizieller Scope `@anthropic-ai`, bereits im Vorbild genutzt. Hat ein `postinstall` (`install.cjs`) zum Verlinken des Plattform-Binärpakets, daher `npm ci` ohne `--ignore-scripts`. |
+| Basis `node:22.23.4-bookworm-slim` | `@sha256:5ec23b7c…3d96d` | Docker Official Image; Tag ≥ 7 Tage alt; läuft als `node` (UID 1000); setuid/setgid-Bits werden im Build entfernt; CA-Bundle aus Nodes Wurzelbestand statt apt-Paket (keine zusätzliche Abhängigkeit, 2026-11-16) |
+| `@anthropic-ai/claude-code` | 2.1.325 (2026-11-13) | **Release-Cooldown unterschritten (4 Tage) – Entscheidung Timo 2026-11-17 („nutze die neuere version“)**, weil 2.1.319 `claude-fable-5-2` nicht kennt (stderr `unrecognized_model`, nimmt nur 200k Kontext an); im Binary von 2.1.325 ist die Modell-ID enthalten. OSV: keine Funde für Haupt- und Plattformpakete (geprüft 2026-11-17); npm-Registry-Signaturen aller 5 Pakete verifiziert, 2 mit Attestation; Integrity im Lockfile = Registry-Wert; neuere 2.1.326 (2026-11-16) nicht übernommen; Scorecard: kein Projekt (Repo ohne Quellcode) → erweiterte Prüfung: Publisher Anthropic, offizieller Scope `@anthropic-ai`, bereits im Vorbild genutzt. Hat ein `postinstall` (`install.cjs`) zum Verlinken des Plattform-Binärpakets, daher `npm ci` ohne `--ignore-scripts`. |
 | `@openai/codex` | 0.167.0 (2026-11-06) | OSV: keine Funde (geprüft 2026-11-16); neuere 0.169.0 (2026-11-13) < 7 Tage alt; Scorecard `openai/codex` 6 |
+
+| `python3` (Debian Bookworm) | `python3=3.11.2-1+b1`, `python3.11=3.11.2-6+deb12u9` | Offizielles Debian-Archiv der Basis, Signaturprüfung durch apt, exakt gepinnt, `--no-install-recommends`, kein pip. Zweck: Hilfsskripte von Codex. Ein Debian-Sicherheitsupdate bricht den Build ab → Pin bewusst anheben (Stand 2026-11-16). |
 
 Plattform-Binärpakete beider CLIs stehen mit Integrity im Lockfile.
 
@@ -201,5 +246,8 @@ Plattform-Binärpakete beider CLIs stehen mit Integrity im Lockfile.
 - **E-6:** Festplattenverschlüsselung, Fallordner nicht in Cloud-Sync (fester Punkt in `entscheidungen.md`).
 - **Malware- und Schwachstellenscan des Images** (supply-chain.md, Must-have 1) ist offen: In der Implementierungsumgebung gab es kein Docker. Vor der ersten Nutzung z. B. mit Trivy/Grype prüfen und den Digest bestätigen.
 - **Docker-Integrationstests** (`tests/integration/`) sind nicht gelaufen (kein Docker); vor der ersten Nutzung mit `LEGAL_DOCKER_TESTS=1` ausführen.
+- **Behoben 2026-11-16:** Codex brach im Container mit rc=1 ab (jede TLS-Verbindung scheiterte),
+  weil das Image kein System-CA-Bundle hatte; mit Host-Zertifikaten lief Codex (rc=0). Nicht
+  verifiziert ist weiterhin, ob Codex den Egress-Proxy (`HTTPS_PROXY`) für alle Verbindungen nutzt.
 - **CLI-Verhalten im Container nicht live verifiziert:** u. a. `claude --add-dir /in` mit `--permission-mode acceptEdits`, Codex-Abruf von URLs über den Proxy (`NODE_USE_ENV_PROXY=1`, kein `curl` im Image) und die Schreibbarkeit des Container-Homes für die CLIs.
 - WebSearch von Claude (Researcher) läuft serverseitig beim Anbieter und umgeht den Proxy (R-6, E-2).

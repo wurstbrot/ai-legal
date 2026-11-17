@@ -17,7 +17,7 @@ AUSGABEDATEI = {
     "sachverhalt": "sachverhalt.json", "rechtsfragen": "rechtsfragen.json", "researcher": "register.json",
     "registercheck": "bestaetigung.json", "anwalt": "entwurf.json", "review": "review.json",
     "ueberarbeitung": "ueberarbeitung.json", "richter": "bewertung.json", "gegenanwalt": "bewertung.json",
-    "persona_klaeger": "persona.json", "persona_beklagter": "persona.json", "fristen": "fristen.json",
+    "persona_klaeger": "persona.json", "persona_beklagter": "persona.json",
     "stratege": "vergleich.json", "groesse": "groesse.json", "coldread": "befunde.json",
 }
 
@@ -64,9 +64,6 @@ def standard_ausgabe(a: Aufruf) -> Any:
                               for e in einwaende]}
     if r in ("persona_klaeger", "persona_beklagter"):
         return {"hinweise": [f"Hinweis {r}"]}
-    if r == "fristen":
-        return {"fristen": [{"bezeichnung": "Berufungsfrist", "datum": "2026-12-01", "quelle": "dok_001"}],
-                "risiken": [{"art": "Kosten", "text": "Kostenrisiko gering"}]}
     if r == "stratege":
         return {"spanne_min": 10000, "spanne_max": 12000, "waehrung": "EUR", "begruendung": "Richter 50:50"}
     if r == "groesse":
